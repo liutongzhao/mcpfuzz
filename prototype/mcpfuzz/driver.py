@@ -1,7 +1,6 @@
-"""驱动层：连接 MCP 目标（Streamable HTTP），取回规范化工具清单。
+"""驱动层：连接 MCP 目标（Streamable HTTP），列工具 / 调用工具。
 
-基于官方 mcp SDK，不自行实现协议/传输。支持可选的 HTTP 头（如鉴权），
-面向任意 MCP 服务通用，不针对具体靶机。
+基于官方 mcp SDK，不自行实现协议/传输。支持可选 HTTP 头（如鉴权），面向任意 MCP 服务通用。
 """
 from __future__ import annotations
 
@@ -13,20 +12,11 @@ from mcp.client.streamable_http import create_mcp_http_client, streamable_http_c
 from .catalog import Target, normalize_tool
 
 
-async def fetch_catalog(url: str, headers: dict | None = None, retries: int = 4) -> Target:
-    """连接目标并返回规范化 Target。公网连接偶发抖动，做有限重试与退避。"""
-    last = None
-    for attempt in range(1, retries + 1):
-        try:
-            return await _fetch(url, headers)
-        except Exception as e:
-            last = e
-            if attempt < retries:
-                await asyncio.sleep(1.0 * attempt)
-    raise RuntimeError(f"连接 {url} 失败（重试 {retries} 次）：{last}")
+async def _with_session(url: str, headers: dict | None, fn):
+    """建立会话，执行 fn(session, init) 并返回其结果。
 
-
-async def _fetch(url: str, headers: dict | None) -> Target:
+    terminate_on_close=False 并在取到结果后吞掉拆解阶段异常（SDK 关闭连接偶发报错）。
+    """
     http_client = create_mcp_http_client(headers=headers) if headers else None
     captured: dict = {}
     try:
@@ -34,32 +24,74 @@ async def _fetch(url: str, headers: dict | None) -> Target:
                                           terminate_on_close=False) as (read, write):
             async with ClientSession(read, write) as session:
                 init = await session.initialize()
-                result = await session.list_tools()
-                captured["init"] = init
-                captured["tools"] = result.tools
+                captured["result"] = await fn(session, init)
     except Exception:
-        # 数据已取全时，吞掉会话拆解阶段的异常（SDK 关闭连接偶发报错）
-        if "tools" not in captured:
+        if "result" not in captured:
             raise
     finally:
         if http_client is not None:
             await http_client.aclose()
+    return captured["result"]
 
-    init = captured["init"]
-    info = getattr(init, "server_info", None)
-    proto = getattr(init, "protocol_version", None)
+
+async def _retry(coro_factory, what: str, url: str, retries: int):
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            return await coro_factory()
+        except Exception as e:
+            last = e
+            if attempt < retries:
+                await asyncio.sleep(1.0 * attempt)
+    raise RuntimeError(f"{what} {url} 失败（重试 {retries} 次）：{last}")
+
+
+# ---------- 列工具 ----------
+
+async def fetch_catalog(url: str, headers: dict | None = None, retries: int = 4) -> Target:
+    async def once():
+        info, proto, tools = await _with_session(url, headers, _collect_tools)
+        return Target(url=url,
+                      server_name=getattr(info, "name", None),
+                      server_version=getattr(info, "version", None),
+                      protocol_version=str(proto) if proto else None,
+                      tools=tools)
+    return await _retry(once, "连接", url, retries)
+
+
+async def _collect_tools(session, init):
+    result = await session.list_tools()
     tools = [normalize_tool(
                  t.name, t.description,
                  getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {})
-             for t in captured["tools"]]
-    return Target(
-        url=url,
-        server_name=getattr(info, "name", None),
-        server_version=getattr(info, "version", None),
-        protocol_version=str(proto) if proto else None,
-        tools=tools,
-    )
+             for t in result.tools]
+    return getattr(init, "server_info", None), getattr(init, "protocol_version", None), tools
 
+
+# ---------- 调用工具 ----------
+
+async def call_tool(url: str, tool: str, arguments: dict,
+                    headers: dict | None = None, retries: int = 3) -> dict:
+    """调用一个工具，返回 {text, is_error, raw}。text 为返回内容拼接的纯文本。"""
+    async def once():
+        return await _with_session(url, headers, lambda s, i: _do_call(s, tool, arguments))
+    return await _retry(once, f"调用 {tool}", url, retries)
+
+
+async def _do_call(session, tool, arguments):
+    res = await session.call_tool(tool, arguments)
+    content = getattr(res, "content", None) or []
+    text = "\n".join((getattr(b, "text", "") or "") for b in content)
+    is_error = getattr(res, "is_error", getattr(res, "isError", False))
+    return {"text": text, "is_error": bool(is_error), "raw": res}
+
+
+# ---------- 同步封装 ----------
 
 def fetch_catalog_sync(url: str, headers: dict | None = None, retries: int = 4) -> Target:
     return asyncio.run(fetch_catalog(url, headers, retries))
+
+
+def call_tool_sync(url: str, tool: str, arguments: dict,
+                   headers: dict | None = None, retries: int = 3) -> dict:
+    return asyncio.run(call_tool(url, tool, arguments, headers, retries))
