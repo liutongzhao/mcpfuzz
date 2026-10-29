@@ -1,0 +1,3 @@
+# SSRF 载荷：参数值 = 回连 URL，服务器去请求它即证明可向任意外部发请求（OOB 通道）
+# {{CALLBACK}} = 回连 URL
+{{CALLBACK}}
