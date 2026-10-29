@@ -25,12 +25,15 @@ def _merge(rules: list[SinkLabel], llms: list[SinkLabel]) -> list[SinkLabel]:
 
 
 class SinkInferencer:
-    def __init__(self, use_llm: bool = True, cache_dir: str | Path | None = None, workers: int = 6):
+    def __init__(self, use_llm: bool = True, cache_dir: str | Path | None = None, workers: int = 6,
+                reporter=None):
         self.use_llm = use_llm
         self.cache_dir = cache_dir
         self.workers = workers
+        self.reporter = reporter or _NullReporter()
 
     def infer(self, target) -> list[ParamSink]:
+        self.reporter.emit("sink.start", tool_count=len(target.tools))
         llm_map: dict[str, dict] = {}
         if self.use_llm and target.tools:
             def one(tool):
@@ -42,11 +45,24 @@ class SinkInferencer:
                 llm_map = dict(ex.map(one, target.tools))
 
         out: list[ParamSink] = []
+        hot = 0
         for tool in target.tools:
             tl = llm_map.get(tool.name, {})
             for p in tool.params:
                 rules = rule_sinks(p)
                 llms = [SinkLabel(x["type"], x.get("confidence", "low"), "llm", x.get("reason", ""))
                         for x in tl.get(p.path, [])]
-                out.append(ParamSink(tool.name, p.path, p.type, _merge(rules, llms)))
+                merged = _merge(rules, llms)
+                ps = ParamSink(tool.name, p.path, p.type, merged)
+                out.append(ps)
+                if merged:
+                    hot += 1
+                    self.reporter.emit("sink.labeled", tool=tool.name, param=p.path,
+                                       sinks=[vars(s) for s in merged])
+        self.reporter.emit("sink.done", param_count=len(out), hot_count=hot)
         return out
+
+
+class _NullReporter:
+    def emit(self, *a, **k):
+        pass

@@ -1,0 +1,20 @@
+[project]
+name = "mcpfuzz"
+version = "0.1.0"
+description = "MCP 服务器黑盒注入漏洞检测 CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp",
+    "rich>=13",
+]
+
+[project.scripts]
+mcpfuzz = "mcpfuzz.cli.main:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcpfuzz*"]

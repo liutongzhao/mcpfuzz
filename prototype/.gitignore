@@ -1,6 +1,8 @@
 .venv/
 out/
+runs/
 __pycache__/
 *.pyc
 mcpfuzz/llm_config.py
 mcpfuzz/payload/_raw/
+*.egg-info/

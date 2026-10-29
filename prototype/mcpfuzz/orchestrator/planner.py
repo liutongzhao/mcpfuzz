@@ -55,7 +55,7 @@ def _fallback_literal(param):
             "array": [], "object": {}}.get(param.type, "test")
 
 
-def _fallback_plan(target_tool) -> Plan:
+def fallback_plan(target_tool) -> Plan:
     """大模型不可用/失败时：长度 1 计划，用 schema 值填满目标工具参数。"""
     args = {p.path: {"src": "literal", "value": _fallback_literal(p)} for p in target_tool.params}
     return Plan(steps=[Step(1, target_tool.name, args)], reachable=True, note="fallback(无大模型)")
@@ -115,7 +115,7 @@ def plan(target_tool, catalog, cache_dir: Path | None = None, max_attempts: int 
         except Exception:
             result = None
     if result is None:
-        result = _fallback_plan(target_tool)
+        result = fallback_plan(target_tool)
 
     if key is not None:
         key.write_text(json.dumps(

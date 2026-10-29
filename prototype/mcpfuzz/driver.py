@@ -13,12 +13,26 @@ from mcp.client.streamable_http import create_mcp_http_client, streamable_http_c
 from .catalog import Target, normalize_tool
 
 
-async def _with_session(url: str, headers: dict | None, fn):
+def _make_http_client(headers: dict | None, timeout: float | None):
+    if not headers and not timeout:
+        return None
+    import httpx2   # mcp SDK 底层用的 httpx 替代包（这个环境里的网络层），不是标准 httpx
+    t = None
+    if timeout:
+        # read 必须留足：streamable HTTP 的响应走 SSE，服务器会把流长时间开着等结果；
+        # 把 read 也压到跟 connect/write/pool 一样短，会在流还没吐数据时就被掐断
+        # （表现为 "Server disconnected without sending a response"）。connect/write/pool
+        # 仍用用户给的 timeout 快速失败，read 给个不低于 SDK 默认(300s)的下限。
+        t = httpx2.Timeout(timeout, read=max(timeout, 300.0))
+    return create_mcp_http_client(headers=headers, timeout=t)
+
+
+async def _with_session(url: str, headers: dict | None, fn, timeout: float | None = None):
     """建立会话，执行 fn(session, init) 并返回其结果。
 
     terminate_on_close=False 并在取到结果后吞掉拆解阶段异常（SDK 关闭连接偶发报错）。
     """
-    http_client = create_mcp_http_client(headers=headers) if headers else None
+    http_client = _make_http_client(headers, timeout)
     captured: dict = {}
     try:
         async with streamable_http_client(url, http_client=http_client,
@@ -49,9 +63,10 @@ async def _retry(coro_factory, what: str, url: str, retries: int):
 
 # ---------- 列工具 ----------
 
-async def fetch_catalog(url: str, headers: dict | None = None, retries: int = 4) -> Target:
+async def fetch_catalog(url: str, headers: dict | None = None, retries: int = 4,
+                        timeout: float | None = None) -> Target:
     async def once():
-        info, proto, tools = await _with_session(url, headers, _collect_tools)
+        info, proto, tools = await _with_session(url, headers, _collect_tools, timeout)
         return Target(url=url,
                       server_name=getattr(info, "name", None),
                       server_version=getattr(info, "version", None),
@@ -72,10 +87,11 @@ async def _collect_tools(session, init):
 # ---------- 调用工具 ----------
 
 async def call_tool(url: str, tool: str, arguments: dict,
-                    headers: dict | None = None, retries: int = 3) -> dict:
+                    headers: dict | None = None, retries: int = 3,
+                    timeout: float | None = None) -> dict:
     """调用一个工具，返回 {text, is_error, raw}。text 为返回内容拼接的纯文本。"""
     async def once():
-        return await _with_session(url, headers, lambda s, i: _do_call(s, tool, arguments))
+        return await _with_session(url, headers, lambda s, i: _do_call(s, tool, arguments), timeout)
     return await _retry(once, f"调用 {tool}", url, retries)
 
 
@@ -89,21 +105,23 @@ async def _do_call(session, tool, arguments):
 
 # ---------- 同步封装 ----------
 
-def fetch_catalog_sync(url: str, headers: dict | None = None, retries: int = 4) -> Target:
-    return asyncio.run(fetch_catalog(url, headers, retries))
+def fetch_catalog_sync(url: str, headers: dict | None = None, retries: int = 4,
+                       timeout: float | None = None) -> Target:
+    return asyncio.run(fetch_catalog(url, headers, retries, timeout))
 
 
 def call_tool_sync(url: str, tool: str, arguments: dict,
-                   headers: dict | None = None, retries: int = 3) -> dict:
-    return asyncio.run(call_tool(url, tool, arguments, headers, retries))
+                   headers: dict | None = None, retries: int = 3,
+                   timeout: float | None = None) -> dict:
+    return asyncio.run(call_tool(url, tool, arguments, headers, retries, timeout))
 
 
 # ---------- 持久会话（一条调用序列共用一个连接） ----------
 
 @asynccontextmanager
-async def open_session(url: str, headers: dict | None = None):
+async def open_session(url: str, headers: dict | None = None, timeout: float | None = None):
     """打开并初始化一个会话，供多次 call_on 复用；退出时关闭（吞掉拆解异常）。"""
-    http_client = create_mcp_http_client(headers=headers) if headers else None
+    http_client = _make_http_client(headers, timeout)
     try:
         async with streamable_http_client(url, http_client=http_client,
                                           terminate_on_close=False) as (read, write):
