@@ -1,0 +1,5 @@
+data/
+__pycache__/
+*.pyc
+.DS_Store
+scripts/llm_config.py
