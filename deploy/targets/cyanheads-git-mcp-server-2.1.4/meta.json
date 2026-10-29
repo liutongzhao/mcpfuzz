@@ -1,0 +1,27 @@
+{
+  "id": "cyanheads-git-mcp-server-2.1.4",
+  "ecosystem": "npm",
+  "package": "@cyanheads/git-mcp-server",
+  "vuln_version": "2.1.4",
+  "patched_version": "2.1.5",
+  "transport": "http",
+  "start_cmd": "git-mcp-server",
+  "env": {
+    "MCP_TRANSPORT_TYPE": "http",
+    "MCP_HTTP_PORT": "8000",
+    "MCP_HTTP_HOST": "0.0.0.0",
+    "MCP_LOG_LEVEL": "info",
+    "GIT_SIGN_COMMITS": "false"
+  },
+  "port": 20001,
+  "cve": "CVE-2025-53107",
+  "ghsa": "GHSA-3q26-f695-pp76",
+  "vuln_class": "command_injection",
+  "hint": {
+    "tools": ["git_add", "git_init"],
+    "params": ["path", "initialBranch"],
+    "wrapped_program": "git",
+    "sample_payload": "a\"|id>/tmp/TEST|echo \""
+  },
+  "notes": "HTTP 原生,无需网关。start_cmd 与 env 的具体名称待首次启动核实(公告用 npm run start:http,端点 /mcp)。"
+}

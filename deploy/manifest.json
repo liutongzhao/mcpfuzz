@@ -1,0 +1,10 @@
+{
+  "network": "mcpnet",
+  "mem_limit": "1g",
+  "oob": {
+    "name": "oob",
+    "image": "mcp-oob",
+    "host_port": 9100
+  },
+  "_comment": "全局配置。靶机由 targets/*/meta.json 自动发现;每个靶机的对外端口写在各自 meta.json 的 port 字段。"
+}
