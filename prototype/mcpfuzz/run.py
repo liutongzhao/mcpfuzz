@@ -61,6 +61,12 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     gw, gw_server = _gateway_setup(settings, url, reporter)
     if gw and settings.gateway_reset in ("before", "both"):
         _gateway_reset(gw, gw_server, "before", reporter)
+    if gw:
+        # reload 后 / 连接前等后端真正就绪（connected 且 tools>0），否则网关会用自己的身份+
+        # 空工具表应答，导致把"0 工具"当成功扫描。预算与冷启动超时挂钩，封顶 180s。
+        budget = max(60.0, min(settings.gateway_idle_ms / 1000.0, 180.0))
+        ready, ntools = gw.wait_ready(gw_server, timeout=budget)
+        reporter.emit("gateway.wait", server=gw_server, ready=ready, tools=ntools)
 
     # 冷启动预算：经网关按需启动时，首个调用(catalog)会触发后端拉起，给足读超时
     cat_timeout = settings.timeout
@@ -72,6 +78,12 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     except Exception as e:
         reporter.emit("connect.fail", error=str(e)[:300])
         raise
+
+    # 经网关时，0 工具几乎一定是后端未就绪（网关用自身身份应答），不要静默产出空报告
+    if gw and len(catalog.tools) == 0:
+        reporter.emit("gateway.error",
+                      error=f"后端 {gw_server} 未就绪（工具数为 0，可能仍在冷启动/未连上），已终止本次扫描；请稍后重试")
+        raise RuntimeError(f"网关后端 {gw_server} 未就绪：tools=0")
 
     reporter.emit("connect.ok", server_name=catalog.server_name, server_version=catalog.server_version,
                   protocol_version=catalog.protocol_version, tool_count=len(catalog.tools))
@@ -141,7 +153,7 @@ def _gateway_reset(gw, server, when, reporter):
     """用 reload 重置后端（stdio=杀进程重拉=干净态）。失败不中断检测，只记事件。"""
     try:
         gw.reload(server)
-        time.sleep(2.0)   # 给网关拆解旧进程的时间；按需启动的后端会在下次调用时重拉
+        time.sleep(1.5)   # 让网关注册到"后端已断开/重连中"；真正的就绪等待由 wait_ready 负责
         reporter.emit("gateway.reset", server=server, when=when)
     except Exception as e:
         reporter.emit("gateway.error", error=f"重置后端 {server} 失败：{str(e)[:200]}")

@@ -64,18 +64,30 @@ class GatewayClient:
         """强制重连上游：stdio 后端 = 杀进程重拉，回到干净状态。"""
         return self._req("POST", f"/api/servers/{server}/reload")
 
-    def status(self, server: str) -> str | None:
+    def server_record(self, server: str) -> dict | None:
         for s in self._req("GET", "/api/servers").get("data", []):
             if s.get("name") == server:
-                return s.get("status")
+                return s
         return None
 
-    def wait_connected(self, server: str, timeout: float = 120.0, interval: float = 2.0) -> bool:
-        """轮询直到后端 status==connected。注意：按需启动的后端需先有一次 MCP 调用才会被拉起，
-        对这类后端预热应直接发 MCP 调用（检测器的 fetch_catalog 即是），而非只靠本方法。"""
+    def status(self, server: str) -> str | None:
+        rec = self.server_record(server)
+        return rec.get("status") if rec else None
+
+    def wait_ready(self, server: str, timeout: float = 120.0, interval: float = 2.0) -> tuple[bool, int]:
+        """轮询直到后端 status==connected **且已暴露工具(tools>0)**，返回 (ready, tool_count)。
+
+        reload 刚发生时后端会被杀掉重拉（stdio 还要 npx 冷启动数秒），这期间网关会用自己的
+        身份+空工具表应答 MCP 握手——必须等到真正就绪再开扫，否则会把"0 工具"当成功扫描。
+        注意：按需启动(on-demand)的后端需先有一次 MCP 调用才会被拉起，对那类后端的预热应直接
+        发 MCP 调用（fetch_catalog 即是），本方法用于 reload 后 / 常驻后端的就绪等待。"""
         deadline = time.time() + timeout
+        n = 0
         while time.time() < deadline:
-            if self.status(server) == "connected":
-                return True
+            rec = self.server_record(server)
+            if rec and rec.get("status") == "connected":
+                n = len(rec.get("tools") or [])
+                if n > 0:
+                    return True, n
             time.sleep(interval)
-        return False
+        return False, n

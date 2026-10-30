@@ -131,6 +131,9 @@ def _fmt_line(ev: Event) -> str | None:
         return f"连接失败  {d.get('error')}"
     if t == "gateway.reset":
         return f"[网关] 已重置后端 {d.get('server')}（reload, {d.get('when')}）→ 干净态"
+    if t == "gateway.wait":
+        ok = "就绪" if d.get("ready") else "未就绪(超时)"
+        return f"[网关] 等待后端 {d.get('server')} {ok}，工具数 {d.get('tools')}"
     if t == "gateway.error":
         return f"[网关] {d.get('error')}"
     if t == "sink.start":
@@ -255,7 +258,7 @@ class RichConsole(_BaseTextConsole):
             style = "yellow"
         elif ev.type == "gateway.error":
             style = "yellow"
-        elif ev.type == "gateway.reset":
+        elif ev.type in ("gateway.reset", "gateway.wait"):
             style = "cyan"
         elif ev.type == "finding.clean":
             style = "green"
