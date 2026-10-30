@@ -14,6 +14,19 @@ from datetime import datetime
 from .events import Event
 
 _LOG_HEIGHT = 16
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+class _Dynamic:
+    """让 rich.Live 每次刷新都重新渲染：Live 以固定帧率调用 __rich__，于是计时器实时
+    跳动、spinner 持续转动，而不是停在"上一条事件发生的那一刻"。没有它，Live 只会反复
+    重贴同一张静态快照——这正是之前"时间不走、长等待像卡死"的原因。"""
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def __rich__(self):
+        return self._fn()
 
 
 def build_console(fmt: str, verbose: int = 0, quiet: bool = False):
@@ -58,7 +71,10 @@ class _BaseTextConsole:
         self.tool_index = 0
         self.tool_total = 0
         self.cur_tool = ""
-        self.counts = {"confirmed": 0, "clean": 0, "unreached": 0}
+        self.sink_done = 0
+        self.sink_total = 0
+        self.cur_activity = ""      # 当前正在做的细节（供实时界面显示，证明还在跑）
+        self.counts = {"confirmed": 0, "clean": 0, "unreached": 0, "skipped": 0}
         self.confirmed_findings: list[dict] = []
         self.dry_run = False
 
@@ -69,11 +85,23 @@ class _BaseTextConsole:
             self.label = f"{self.label}  [{name}]" if self.label else name
         elif ev.type == "sink.start":
             self.stage = "sink"
+            self.sink_total = d.get("tool_count", 0)
+            self.sink_done = 0
+            self.cur_activity = "调用大模型识别 sink …"
+        elif ev.type == "sink.progress":
+            self.sink_done = d.get("done", self.sink_done)
+            self.sink_total = d.get("total", self.sink_total)
+            self.cur_activity = f"已识别工具 {d.get('tool', '')}"
+        elif ev.type == "sink.done":
+            self.cur_activity = ""
         elif ev.type == "attack.plan":
             self.stage = "attack"
             self.cur_tool = d.get("tool", "")
             self.tool_index = d.get("index", self.tool_index)
             self.tool_total = d.get("total", self.tool_total)
+            self.cur_activity = f"规划 {d.get('tool', '')} 的调用序列 …"
+        elif ev.type == "attack.param.start":
+            self.cur_activity = f"发射载荷 {d.get('tool', '')}.{d.get('param', '')}（{d.get('payload_count', '?')} 条，{d.get('sink', '')}）"
         elif ev.type == "finding.confirmed":
             self.counts["confirmed"] += 1
             self.confirmed_findings.append(d)
@@ -81,6 +109,8 @@ class _BaseTextConsole:
             self.counts["clean"] += 1
         elif ev.type == "finding.unreached":
             self.counts["unreached"] += 1
+        elif ev.type == "finding.skipped":
+            self.counts["skipped"] += 1
         elif ev.type == "run.end":
             self.stage = "done"
             self.dry_run = bool(d.get("dry_run"))
@@ -101,6 +131,8 @@ def _fmt_line(ev: Event) -> str | None:
         return f"连接失败  {d.get('error')}"
     if t == "sink.start":
         return f"推断 sink …（{d.get('tool_count')} 个工具）"
+    if t == "sink.progress":
+        return f"  sink 进度 {d.get('done')}/{d.get('total')}  （{d.get('tool')}）"
     if t == "sink.labeled":
         tags = ",".join(f"{s['type']}({s['confidence']}/{s['source']})" for s in d.get("sinks", []))
         return f"[sink] {d.get('tool')}.{d.get('param')} → {tags}"
@@ -114,7 +146,9 @@ def _fmt_line(ev: Event) -> str | None:
     if t == "attack.tool.error":
         return f"[异常] {d.get('tool')} 会话异常: {d.get('error')}"
     if t == "launchpad.fail":
-        return f"[未触达] {d.get('tool')}: {d.get('reason')}"
+        return f"[未测成] {d.get('tool')}: {d.get('reason')}"
+    if t == "launchpad.warn":
+        return f"[前置不全] {d.get('tool')}: {d.get('reason')}（仍继续测试目标工具）"
     if t == "attack.param.start":
         return f"[attack] {d.get('tool')}.{d.get('param')} ← 发射 {d.get('payload_count')} 条载荷 ({d.get('sink')})"
     if t == "payload.sent":
@@ -129,6 +163,9 @@ def _fmt_line(ev: Event) -> str | None:
     if t == "finding.unreached":
         note = f"  ({d.get('note')})" if d.get("note") else ""
         return f"○ 未触达  {d.get('tool')}.{d.get('param')}  ({d.get('sink')}){note}"
+    if t == "finding.skipped":
+        note = f"  ({d.get('note')})" if d.get("note") else ""
+        return f"⊘ 未测成  {d.get('tool')}.{d.get('param')}  ({d.get('sink')}){note}"
     if t == "report.saved":
         return f"报告已保存：{d.get('path')}"
     if t == "run.end":
@@ -136,7 +173,7 @@ def _fmt_line(ev: Event) -> str | None:
             return "（dry-run，未发送任何载荷）"
         return (f"结束  用时 {d.get('duration', 0):.1f}s  "
                 f"确认 {d.get('confirmed')} | 疑似无 {d.get('clean')} | 未触达 {d.get('unreached')} | "
-                f"总计 {d.get('total')}")
+                f"未测成 {d.get('skipped', 0)} | 总计 {d.get('total')}")
     return None
 
 
@@ -180,18 +217,21 @@ class RichConsole(_BaseTextConsole):
         self._reset(label)
         self.log_lines.clear()
         self._t0 = time.time()
-        self._live = self._Live(self._render(), console=self.console, refresh_per_second=8, transient=False)
+        # 传入动态渲染对象 + 较高帧率：Live 自动按帧刷新，计时器/spinner 实时动。
+        self._live = self._Live(_Dynamic(self._render), console=self.console,
+                                refresh_per_second=12, transient=False)
         self._live.start()
 
     def handle(self, ev: Event) -> None:
         if ev.level == "debug" and self.verbose < 2:
             return
         self._update(ev)
-        line = _fmt_line(ev)
-        if line is not None:
-            self._append(ev, line)
-        if self._live:
-            self._live.update(self._render())
+        # sink.progress 只反映在顶部状态条，不逐条刷进滚动日志（否则一堆噪音行）
+        if ev.type != "sink.progress":
+            line = _fmt_line(ev)
+            if line is not None:
+                self._append(ev, line)
+        # 渲染交给 Live 的自动刷新（_Dynamic），无需在此手动 update
 
     def stop(self) -> None:
         if self._live:
@@ -207,7 +247,7 @@ class RichConsole(_BaseTextConsole):
             style = "bold red"
         elif ev.type in ("connect.fail", "attack.tool.error"):
             style = "red"
-        elif ev.type in ("launchpad.fail", "finding.unreached"):
+        elif ev.type in ("launchpad.fail", "launchpad.warn", "finding.unreached", "finding.skipped"):
             style = "yellow"
         elif ev.type == "finding.clean":
             style = "green"
@@ -223,16 +263,24 @@ class RichConsole(_BaseTextConsole):
         header.add_column()
         header.add_column()
         header.add_row("目标", self.label or "-")
-        stage_line = STAGE_LABELS.get(self.stage, self.stage)
-        if self.stage == "attack" and self.tool_total:
+        done = self.stage == "done"
+        spin = "✓" if done else _SPINNER[int((time.time() - self._t0) * 12) % len(_SPINNER)]
+        stage_line = f"{spin} {STAGE_LABELS.get(self.stage, self.stage)}"
+        if self.stage == "sink" and self.sink_total:
+            stage_line += f"  [{self.sink_done}/{self.sink_total} 工具]"
+        elif self.stage == "attack" and self.tool_total:
             stage_line += f"  [{self.tool_index}/{self.tool_total}]  当前: {self.cur_tool}"
         header.add_row("阶段", stage_line)
+        if self.cur_activity and not done:
+            header.add_row("正在", f"{self.cur_activity}")
         header.add_row("结果", f"● 确认 {self.counts['confirmed']}   "
-                               f"疑似无 {self.counts['clean']}   未触达 {self.counts['unreached']}")
-        header.add_row("用时", f"{time.time() - self._t0:.0f}s")
+                               f"疑似无 {self.counts['clean']}   未触达 {self.counts['unreached']}   "
+                               f"未测成 {self.counts['skipped']}")
+        elapsed = int(time.time() - self._t0)
+        header.add_row("用时", f"{elapsed // 60}:{elapsed % 60:02d}" if elapsed >= 60 else f"{elapsed}s")
 
         body = Text()
-        for ts, line, style in self.log_lines:
+        for ts, line, style in list(self.log_lines):   # 快照：Live 在后台线程渲染，避免迭代中被改
             body.append(f"{ts}  ", style="dim")
             body.append(line + "\n", style=style)
 
@@ -252,6 +300,7 @@ class RichConsole(_BaseTextConsole):
         table.add_row("[bold red]确认漏洞[/bold red]", str(self.counts["confirmed"]))
         table.add_row("疑似无漏洞", str(self.counts["clean"]))
         table.add_row("未触达", str(self.counts["unreached"]))
+        table.add_row("未测成", str(self.counts["skipped"]))
         self.console.print(table)
         for f in self.confirmed_findings:
             self.console.print(f"  [bold red]●[/bold red] {f.get('tool')}.{f.get('param')}  "

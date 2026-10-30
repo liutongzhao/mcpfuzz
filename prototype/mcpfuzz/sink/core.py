@@ -1,7 +1,7 @@
 """Sink 推断门面：合并规则层与大模型层，输出每个参数的 sink 标注。"""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .llm import classify_tool
@@ -41,8 +41,18 @@ class SinkInferencer:
                     return tool.name, classify_tool(tool, self.cache_dir)
                 except Exception:
                     return tool.name, {}
-            with ThreadPoolExecutor(min(self.workers, len(target.tools))) as ex:
-                llm_map = dict(ex.map(one, target.tools))
+            total = len(target.tools)
+            # 用 as_completed 边完成边上报进度：LLM 分类是本阶段最慢的部分，若等 map 全部
+            # 跑完再出结果，界面会长时间无任何动静（像卡死）。这里每完成一个工具就 emit
+            # 一次 sink.progress，让用户看到"已识别 x/total"实时推进。
+            with ThreadPoolExecutor(min(self.workers, total)) as ex:
+                futures = [ex.submit(one, t) for t in target.tools]
+                done = 0
+                for fut in as_completed(futures):
+                    name, res = fut.result()
+                    llm_map[name] = res
+                    done += 1
+                    self.reporter.emit("sink.progress", done=done, total=total, tool=name)
 
         out: list[ParamSink] = []
         hot = 0
