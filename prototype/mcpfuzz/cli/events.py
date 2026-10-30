@@ -15,6 +15,7 @@ cli.console 和 cli.main 决定，内核不感知呈现方式——没挂任何 
   attack.param.start                     开始对某参数发载荷
   payload.sent                           每条载荷的发送结果（debug，仅 -vv）
   finding.confirmed / finding.clean / finding.unreached / finding.skipped   四态判定结论
+  gateway.reset / gateway.error          经 mcphub 网关检测时：后端重置结果 / 网关异常
   report.saved                           报告落盘路径
 """
 from __future__ import annotations

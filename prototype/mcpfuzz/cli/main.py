@@ -73,6 +73,23 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
     g_safe.add_argument("--yes", dest="assume_yes", action="store_true", default=None,
                        help="跳过发起副作用检测前的确认（批量/CI 必备）")
 
+    g_gw = p.add_argument_group("网关（经 mcphub 检测，可选）")
+    g_gw.add_argument("--gateway", dest="gateway_base", default=None, metavar="URL",
+                      help="mcphub 基址，如 http://host:3000；给了才启用网关集成")
+    g_gw.add_argument("--gateway-token", dest="gateway_token", default=None, metavar="TOKEN",
+                      help="网关管理 token（x-auth-token），与 --gateway-password 二选一")
+    g_gw.add_argument("--gateway-user", dest="gateway_user", default=None, metavar="USER",
+                      help="网关管理员用户名（默认 admin）")
+    g_gw.add_argument("--gateway-password", dest="gateway_password", default=None, metavar="PWD",
+                      help="网关管理员密码（登录换 token）")
+    g_gw.add_argument("--gateway-server", dest="gateway_server", default=None, metavar="NAME",
+                      help="该目标在网关里的后端名（默认从 /mcp/{server} URL 解析）")
+    g_gw.add_argument("--gateway-reset", dest="gateway_reset",
+                      choices=["off", "before", "after", "both"], default=None,
+                      help="扫描前/后用 reload 重置后端到干净态（默认 off）")
+    g_gw.add_argument("--gateway-idle-ms", dest="gateway_idle_ms", type=int, default=None, metavar="MS",
+                      help="网关空闲关闭超时（按需启动），用作首连冷启动预算（默认 300000）")
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mcpfuzz", description="MCP 服务器黑盒注入漏洞检测")

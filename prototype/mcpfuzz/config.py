@@ -43,6 +43,14 @@ class Settings:
     # 安全 / 伦理
     dry_run: bool = False
     assume_yes: bool = False
+    # 网关（经 mcphub 检测，可选）：给了 gateway_base 才启用；检测逻辑不变，仅加重置/冷启动适配
+    gateway_base: str | None = None        # mcphub 基址，如 http://host:3000
+    gateway_token: str | None = None       # 管理 token（x-auth-token），与 password 二选一
+    gateway_user: str = "admin"
+    gateway_password: str | None = None
+    gateway_server: str | None = None      # 该目标在网关里的后端名；默认从 /mcp/{server} URL 解析
+    gateway_reset: str = "off"             # off|before|after|both：扫描前/后用 reload 重置后端
+    gateway_idle_ms: int = 300000          # 网关空闲关闭超时（按需启动）；用作首连冷启动预算
 
 
 def _load_toml(path: str | Path) -> dict:

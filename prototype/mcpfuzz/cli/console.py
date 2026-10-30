@@ -129,6 +129,10 @@ def _fmt_line(ev: Event) -> str | None:
                 f"协议 {d.get('protocol_version')}  工具数 {d.get('tool_count')}")
     if t == "connect.fail":
         return f"连接失败  {d.get('error')}"
+    if t == "gateway.reset":
+        return f"[网关] 已重置后端 {d.get('server')}（reload, {d.get('when')}）→ 干净态"
+    if t == "gateway.error":
+        return f"[网关] {d.get('error')}"
     if t == "sink.start":
         return f"推断 sink …（{d.get('tool_count')} 个工具）"
     if t == "sink.progress":
@@ -249,6 +253,10 @@ class RichConsole(_BaseTextConsole):
             style = "red"
         elif ev.type in ("launchpad.fail", "launchpad.warn", "finding.unreached", "finding.skipped"):
             style = "yellow"
+        elif ev.type == "gateway.error":
+            style = "yellow"
+        elif ev.type == "gateway.reset":
+            style = "cyan"
         elif ev.type == "finding.clean":
             style = "green"
         self.log_lines.append((ts, line, style))

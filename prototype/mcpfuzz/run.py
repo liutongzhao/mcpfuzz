@@ -57,8 +57,18 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     reporter.emit("run.start", target=target_arg, url=url, run_dir=str(run_dir))
     t0 = time.time()
 
+    # 网关集成（可选，不影响检测逻辑）：适配 reload 重置与按需启动
+    gw, gw_server = _gateway_setup(settings, url, reporter)
+    if gw and settings.gateway_reset in ("before", "both"):
+        _gateway_reset(gw, gw_server, "before", reporter)
+
+    # 冷启动预算：经网关按需启动时，首个调用(catalog)会触发后端拉起，给足读超时
+    cat_timeout = settings.timeout
+    if settings.gateway_base:
+        cat_timeout = max(settings.timeout, settings.gateway_idle_ms / 1000.0)
+
     try:
-        catalog = fetch_catalog_sync(url, headers, retries=settings.retries, timeout=settings.timeout)
+        catalog = fetch_catalog_sync(url, headers, retries=settings.retries, timeout=cat_timeout)
     except Exception as e:
         reporter.emit("connect.fail", error=str(e)[:300])
         raise
@@ -103,7 +113,38 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
 
     reporter.emit("run.end", duration=time.time() - t0, confirmed=confirmed, clean=clean,
                   unreached=unreached, skipped=skipped, total=len(findings), dry_run=settings.dry_run)
+
+    if gw and settings.gateway_reset in ("after", "both"):
+        _gateway_reset(gw, gw_server, "after", reporter)
     return findings
+
+
+def _gateway_setup(settings, url, reporter):
+    """按 settings 建 GatewayClient 并定位后端名；未配置或无法定位则返回 (None, None)。"""
+    if not settings.gateway_base:
+        return None, None
+    from mcpfuzz.gateway import GatewayClient, server_name_from_url
+    server = settings.gateway_server or server_name_from_url(url)
+    if not server:
+        reporter.emit("gateway.error", error=f"无法从 URL 解析后端名，且未给 --gateway-server：{url}")
+        return None, None
+    try:
+        gw = GatewayClient(settings.gateway_base, token=settings.gateway_token,
+                           user=settings.gateway_user, password=settings.gateway_password)
+    except Exception as e:
+        reporter.emit("gateway.error", error=f"连接网关失败：{str(e)[:200]}")
+        return None, None
+    return gw, server
+
+
+def _gateway_reset(gw, server, when, reporter):
+    """用 reload 重置后端（stdio=杀进程重拉=干净态）。失败不中断检测，只记事件。"""
+    try:
+        gw.reload(server)
+        time.sleep(2.0)   # 给网关拆解旧进程的时间；按需启动的后端会在下次调用时重拉
+        reporter.emit("gateway.reset", server=server, when=when)
+    except Exception as e:
+        reporter.emit("gateway.error", error=f"重置后端 {server} 失败：{str(e)[:200]}")
 
 
 def read_batch_file(path: str) -> list[str]:
