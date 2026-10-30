@@ -12,8 +12,10 @@ cli.console 和 cli.main 决定，内核不感知呈现方式——没挂任何 
   attack.tool.error                      该工具会话重试耗尽（标为未测成，不中断整体）
   launchpad.fail                         发射台没搭起来、目标实参取不到值（未测成）
   launchpad.warn                         前置步骤有失败但仍继续测试目标工具
+  launchpad.step                         每个前置步骤的发送详情（debug：实参/响应/错误正文）
+  launchpad.ready                        目标工具发射台基线实参就绪（debug）
   attack.param.start                     开始对某参数发载荷
-  payload.sent                           每条载荷的发送结果（debug，仅 -vv）
+  payload.sent                           每条载荷的发送结果（debug，仅 -vv；文件含实参/响应/错误正文）
   finding.confirmed / finding.clean / finding.unreached / finding.skipped   四态判定结论
   gateway.reset / gateway.error          经 mcphub 网关检测时：后端重置结果 / 网关异常
   report.saved                           报告落盘路径
@@ -92,13 +94,18 @@ class LogFileSink:
 _SECRET_KEYS = {"authorization", "api_key", "apikey", "token", "headers"}
 
 
+# run.log 面向人读调试，留足长度：响应/错误正文、嵌套实参都要能看全，便于排查
+# "未触达/报错"的真实原因。真正机读、需完整回放的事实源是 events.jsonl（不截断）。
+_LOGFILE_CAP = 4000
+
+
 def _fmt_data(data: dict) -> str:
     parts = []
     for k, v in data.items():
         if k.lower() in _SECRET_KEYS:
             v = "***"
         s = str(v)
-        if len(s) > 300:
-            s = s[:300] + "…"
+        if len(s) > _LOGFILE_CAP:
+            s = s[:_LOGFILE_CAP] + f"…(截断,共{len(s)}字符,完整见 events.jsonl)"
         parts.append(f"{k}={s}")
     return " ".join(parts)

@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from mcp import ClientSession
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
-from .catalog import Target, normalize_tool
+from .catalog import Target, nest_arguments, normalize_tool
 
 
 def _make_http_client(headers: dict | None, timeout: float | None):
@@ -96,11 +96,15 @@ async def call_tool(url: str, tool: str, arguments: dict,
 
 
 async def _do_call(session, tool, arguments):
-    res = await session.call_tool(tool, arguments)
+    # 发送前把扁平的点号/方括号键实参还原成工具期望的嵌套结构（与 flatten_schema 对称）。
+    # 这是全局唯一的 tools/call 出口，放这里可让载荷调用、前置步骤、兜底计划都统一受益。
+    sent = nest_arguments(arguments)
+    res = await session.call_tool(tool, sent)
     content = getattr(res, "content", None) or []
     text = "\n".join((getattr(b, "text", "") or "") for b in content)
     is_error = getattr(res, "is_error", getattr(res, "isError", False))
-    return {"text": text, "is_error": bool(is_error), "raw": res}
+    # args_sent 回传真正发到线上的嵌套实参，供日志如实记录（便于 debug 复现）。
+    return {"text": text, "is_error": bool(is_error), "raw": res, "args_sent": sent}
 
 
 # ---------- 同步封装 ----------

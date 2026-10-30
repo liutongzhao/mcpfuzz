@@ -56,10 +56,18 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
         args, missing = await _resolve_args(st.args, step_responses)
         if missing:
             launchpad_errors.append(f"步骤{st.step}({st.tool})参数{missing}未能取值")
+            reporter.emit("launchpad.step", level="debug", tool=st.tool, step=st.step,
+                          skipped=True, missing=missing,
+                          reason="依赖的前置产出缺席，跳过此步")
             continue   # 跳过此步，其产出缺席；若目标依赖它，会在取值阶段暴露
         res = await _safe_call(session, st.tool, args)
         step_responses[st.step] = res["text"]
         seq_trace.append({"tool": st.tool, "args": args, "is_error": res["is_error"]})
+        # 前置步骤逐步落盘：真正发出的嵌套实参 + 是否报错 + 响应/错误正文。
+        # debug 级：默认不进终端，仅 -vv 显示；run.log / events.jsonl 始终全量记录。
+        reporter.emit("launchpad.step", level="debug", tool=st.tool, step=st.step,
+                      args=res.get("args_sent", args), is_error=res["is_error"],
+                      response=res.get("text", ""), error=res.get("exc"))
         if res["is_error"]:
             launchpad_errors.append(f"步骤{st.step}({st.tool})调用报错")
     if launchpad_errors:
@@ -72,6 +80,7 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
         note = f"目标工具参数 {missing} 未能取值{extra}"
         reporter.emit("launchpad.fail", tool=target, reason=note)
         return _skipped_all(target, sink_params, note, reporter)
+    reporter.emit("launchpad.ready", level="debug", tool=target, base_args=base_args)
 
     # 3) 对每个 sink 参数：循环发载荷 + 三态判定 + 早停
     findings = []
@@ -131,19 +140,29 @@ async def _attack_param(session, target, base_args, param_sink, synthesizer, ora
 
     oob_pending = []    # [(payload, probe)]
     saw_ok = saw_err = False
+    last_err = ""       # 代表性错误正文：供"未触达"结论附带原因，不再是一句笼统的话
     for p in payloads:
         args = {**base_args, param: p.value}
         res = await _safe_call(session, target, args)
+        # 每条载荷全量落盘：真正发出的嵌套实参 + 是否报错 + 响应/错误正文 + sink 族类。
+        # debug 级：终端默认不显示（-vv 才显示且只显示精简行），文件 sink 始终记全。
         reporter.emit("payload.sent", level="debug", tool=target, param=param, channel=p.channel,
-                      payload=p.value, is_error=res["is_error"])
+                      payload=p.value, sink=p.sink, is_error=res["is_error"],
+                      args=res.get("args_sent", args),
+                      response=res.get("text", ""), error=res.get("exc"))
         if res["is_error"]:
             saw_err = True
+            err_text = res.get("exc") or res.get("text") or ""
+            if err_text:
+                last_err = err_text
         else:
             saw_ok = True
         if p.channel == "reflection":
             hit = oracle.observe_response(p.probe, res["text"])
             if hit:
-                return _confirmed(target, param, sink, p, hit, seq_trace, args)
+                # 确认时用命中载荷“自身”的 sink 族类，而非该参数的首要 sink 标签——
+                # 否则一条命令注入载荷打中、却被报成参数首标的 path_traversal（类型标错）。
+                return _confirmed(target, param, p.sink, p, hit, seq_trace, args)
         else:  # oob：先全部发出，稍后一次性 poll
             oob_pending.append(p)
         if delay:
@@ -155,11 +174,18 @@ async def _attack_param(session, target, base_args, param_sink, synthesizer, ora
             hit = hits.get(p.probe.token)
             if hit:
                 args = {**base_args, param: p.value}
-                return _confirmed(target, param, sink, p, hit, seq_trace, args)
+                return _confirmed(target, param, p.sink, p, hit, seq_trace, args)
 
     status = LIKELY_CLEAN if saw_ok else UNREACHED
-    return Finding(target, param, sink, status,
-                   note="" if saw_ok else "所有载荷调用均报错，可能未触达 sink")
+    if saw_ok:
+        note = ""
+    else:
+        note = "所有载荷调用均报错，可能未触达 sink"
+        if last_err:
+            # 摘要只带精简错误（终端/报告够用即可）；完整响应/错误正文已随
+            # payload.sent 全量落到 run.log / events.jsonl，排查看文件。
+            note += f"；样例错误：{str(last_err)[:120]}"
+    return Finding(target, param, sink, status, note=note)
 
 
 def _confirmed(target, param, sink, payload, hit, seq_trace, final_args):
@@ -176,4 +202,5 @@ async def _safe_call(session, tool, args) -> dict:
     try:
         return await call_on(session, tool, args)
     except Exception as e:
-        return {"text": "", "is_error": True, "raw": None, "exc": str(e)[:150]}
+        # 调用抛异常（网络/协议/序列化等），此时未能发到线上：args_sent 回落为原始实参。
+        return {"text": "", "is_error": True, "raw": None, "exc": repr(e), "args_sent": args}
