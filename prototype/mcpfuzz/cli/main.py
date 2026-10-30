@@ -198,11 +198,12 @@ def cmd_scan(args) -> int:
         console.start(label)
         try:
             run_dir, findings = _run_one(target_arg, name, settings, console, extra_headers)
-            from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, UNREACHED
+            from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED
             results.append({"target": label, "run_dir": str(run_dir),
                            "confirmed": sum(f.status == CONFIRMED for f in findings),
                            "clean": sum(f.status == LIKELY_CLEAN for f in findings),
-                           "unreached": sum(f.status == UNREACHED for f in findings)})
+                           "unreached": sum(f.status == UNREACHED for f in findings),
+                           "skipped": sum(f.status == SKIPPED for f in findings)})
         except Exception as e:
             results.append({"target": label, "error": str(e)[:300]})
             if args.fail_fast:

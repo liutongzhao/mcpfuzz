@@ -6,7 +6,7 @@ import asyncio
 from mcpfuzz.driver import call_on
 
 from .extract import extract_value
-from .types import CONFIRMED, LIKELY_CLEAN, UNREACHED, Finding
+from .types import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED, Finding
 
 
 class _NullReporter:
@@ -43,30 +43,35 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
     seq_trace = []   # 可复现：前置调用记录
 
     if not plan.reachable:
-        return _unreached_all(target, sink_params, plan.note, reporter)
+        return _skipped_all(target, sink_params, plan.note or "计划判定目标不可达", reporter)
 
-    # 1) 建立发射台：执行前置步骤（除最后一步），逐跳取值+验证
+    # 1) 建立发射台：尽力执行前置步骤。某一步取值失败或调用报错时，不再整体放弃——
+    #    前置步骤多是"保证仓库/资源存在"这类铺垫，一步失败不代表目标工具不可注入。
+    #    （实测：planner 选 git_set_working_dir 作前置、该步报错，曾把一个本已确认的
+    #     参数注入误判为"未触达"。）只有当目标工具的实参确实依赖失败步骤的产出、
+    #    无法取值时，才在下一步判为 SKIPPED。
     step_responses = {}
+    launchpad_errors = []
     for st in plan.steps[:-1]:
         args, missing = await _resolve_args(st.args, step_responses)
         if missing:
-            note = f"前置步骤 {st.step}({st.tool}) 参数 {missing} 未能取值"
-            reporter.emit("launchpad.fail", tool=target, reason=note)
-            return _unreached_all(target, sink_params, note, reporter)
+            launchpad_errors.append(f"步骤{st.step}({st.tool})参数{missing}未能取值")
+            continue   # 跳过此步，其产出缺席；若目标依赖它，会在取值阶段暴露
         res = await _safe_call(session, st.tool, args)
         step_responses[st.step] = res["text"]
         seq_trace.append({"tool": st.tool, "args": args, "is_error": res["is_error"]})
         if res["is_error"]:
-            note = f"前置步骤 {st.step}({st.tool}) 调用报错"
-            reporter.emit("launchpad.fail", tool=target, reason=note)
-            return _unreached_all(target, sink_params, note, reporter)
+            launchpad_errors.append(f"步骤{st.step}({st.tool})调用报错")
+    if launchpad_errors:
+        reporter.emit("launchpad.warn", tool=target, reason="；".join(launchpad_errors))
 
-    # 2) 目标工具的"发射台"实参（最后一步）
+    # 2) 目标工具的"发射台"实参（最后一步）：只有真的取不到值才判 SKIPPED
     base_args, missing = await _resolve_args(plan.steps[-1].args, step_responses)
     if missing:
-        note = f"目标工具参数 {missing} 未能取值"
+        extra = f"（前置: {'；'.join(launchpad_errors)}）" if launchpad_errors else ""
+        note = f"目标工具参数 {missing} 未能取值{extra}"
         reporter.emit("launchpad.fail", tool=target, reason=note)
-        return _unreached_all(target, sink_params, note, reporter)
+        return _skipped_all(target, sink_params, note, reporter)
 
     # 3) 对每个 sink 参数：循环发载荷 + 三态判定 + 早停
     findings = []
@@ -82,7 +87,7 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
             note = f"连接异常中止（可能是网络抖动打断了正在进行的调用）：{str(e)[:150]}"
             reporter.emit("attack.tool.error", tool=target, error=note)
             for ps2 in sink_params[i:]:
-                f2 = Finding(target, ps2.param_path, _sink_of(ps2), UNREACHED, note=note)
+                f2 = Finding(target, ps2.param_path, _sink_of(ps2), SKIPPED, note=note)
                 findings.append(f2)
                 _emit_finding(reporter, f2)
             break
@@ -91,10 +96,10 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
     return findings
 
 
-def _unreached_all(target, sink_params, note, reporter) -> list:
-    out = [Finding(target, ps.param_path, _sink_of(ps), UNREACHED, note=note) for ps in sink_params]
+def _skipped_all(target, sink_params, note, reporter) -> list:
+    out = [Finding(target, ps.param_path, _sink_of(ps), SKIPPED, note=note) for ps in sink_params]
     for f in out:
-        reporter.emit("finding.unreached", tool=f.tool, param=f.param, sink=f.sink, note=f.note)
+        reporter.emit("finding.skipped", tool=f.tool, param=f.param, sink=f.sink, note=f.note)
     return out
 
 
@@ -104,8 +109,10 @@ def _emit_finding(reporter, f) -> None:
                       payload=f.payload, evidence=f.evidence)
     elif f.status == LIKELY_CLEAN:
         reporter.emit("finding.clean", tool=f.tool, param=f.param, sink=f.sink, note=f.note)
-    else:
+    elif f.status == UNREACHED:
         reporter.emit("finding.unreached", tool=f.tool, param=f.param, sink=f.sink, note=f.note)
+    else:
+        reporter.emit("finding.skipped", tool=f.tool, param=f.param, sink=f.sink, note=f.note)
 
 
 async def _attack_param(session, target, base_args, param_sink, synthesizer, oracle, seq_trace,

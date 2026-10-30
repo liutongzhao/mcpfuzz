@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcpfuzz.driver import fetch_catalog_sync
 from mcpfuzz.oracle import Oracle
-from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, UNREACHED, Orchestrator
+from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED, Orchestrator
 from mcpfuzz.report import render_markdown
 from mcpfuzz.sink import SinkInferencer
 from mcpfuzz.targetcfg import resolve_target
@@ -91,6 +91,7 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     confirmed = sum(f.status == CONFIRMED for f in findings)
     clean = sum(f.status == LIKELY_CLEAN for f in findings)
     unreached = sum(f.status == UNREACHED for f in findings)
+    skipped = sum(f.status == SKIPPED for f in findings)
 
     (run_dir / "findings.json").write_text(
         json.dumps([asdict(f) for f in findings], ensure_ascii=False, indent=2))
@@ -101,7 +102,7 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
         reporter.emit("report.saved", path=str(report_path))
 
     reporter.emit("run.end", duration=time.time() - t0, confirmed=confirmed, clean=clean,
-                  unreached=unreached, total=len(findings), dry_run=settings.dry_run)
+                  unreached=unreached, skipped=skipped, total=len(findings), dry_run=settings.dry_run)
     return findings
 
 
@@ -120,13 +121,13 @@ def write_batch_summary(out_dir: Path, results: list[dict]) -> Path:
     lines = ["# MCPFuzz 批量扫描汇总", "",
             f"- 生成时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
             f"- 目标数：{len(results)}", "",
-            "| 目标 | 确认漏洞 | 疑似无 | 未触达 | 产物 |", "|---|---|---|---|---|"]
+            "| 目标 | 确认漏洞 | 疑似无 | 未触达 | 未测成 | 产物 |", "|---|---|---|---|---|---|"]
     for r in results:
         if r.get("error"):
-            lines.append(f"| `{r['target']}` | — | — | — | 失败：{r['error'][:100]} |")
+            lines.append(f"| `{r['target']}` | — | — | — | — | 失败：{r['error'][:100]} |")
         else:
             lines.append(f"| `{r['target']}` | {r['confirmed']} | {r['clean']} | {r['unreached']} | "
-                         f"`{r['run_dir']}` |")
+                         f"{r.get('skipped', 0)} | `{r['run_dir']}` |")
     text = "\n".join(lines) + "\n"
     path = Path(out_dir) / "batch_summary.md"
     path.write_text(text)

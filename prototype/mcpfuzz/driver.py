@@ -120,19 +120,42 @@ def call_tool_sync(url: str, tool: str, arguments: dict,
 
 @asynccontextmanager
 async def open_session(url: str, headers: dict | None = None, timeout: float | None = None):
-    """打开并初始化一个会话，供多次 call_on 复用；退出时关闭（吞掉拆解异常）。"""
+    """打开并初始化一个会话，供多次 call_on 复用；退出时关闭。
+
+    关键：只吞掉"成功 yield 之后"（会话拆解阶段 SDK 偶发报错）的异常；连接/初始化
+    等 yield 之前的失败必须向上抛出。否则生成器"没 yield 就结束"，调用处 `async with`
+    会抛出含义全无的 `RuntimeError: generator didn't yield`，把真实错误（连接被拒/
+    初始化失败/服务器无响应）彻底掩盖——这正是之前整轮扫描从中途开始级联失败、
+    却只在日志里留下一句 `generator didn't yield` 的根因。
+    """
     http_client = _make_http_client(headers, timeout)
+    yielded = False
     try:
         async with streamable_http_client(url, http_client=http_client,
                                           terminate_on_close=False) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
+                yielded = True
                 yield session
     except Exception:
-        pass  # 会话拆解阶段 SDK 偶发报错，调用结果已在外层收集
+        if not yielded:
+            raise  # yield 之前失败 → 抛出，交给上层重试 / 记录真实原因
+        # yield 之后（拆解阶段）SDK 偶发报错，调用结果已在正文收集，吞掉即可
     finally:
         if http_client is not None:
             await http_client.aclose()
+
+
+async def ping(url: str, headers: dict | None = None, timeout: float | None = None) -> bool:
+    """轻量存活探测：仅建立会话并 initialize，成功返回 True。
+
+    用于区分"服务器被打挂/无响应"（结果，甚至是 DoS 信号）与"客户端自身会话异常"（bug）。
+    """
+    try:
+        await _with_session(url, headers, lambda s, i: True, timeout)
+        return True
+    except Exception:
+        return False
 
 
 async def call_on(session, tool: str, arguments: dict) -> dict:

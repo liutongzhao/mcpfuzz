@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# 三态判定
+# 四态判定
 CONFIRMED = "confirmed"        # 判定器命中 → 确认漏洞
 LIKELY_CLEAN = "likely_clean"  # 调用正常返回但无信号 → 大概率到了 sink 无漏洞
-UNREACHED = "unreached"        # 没打到 sink（目标参数被校验拒 / 前置没跑通）
+UNREACHED = "unreached"        # 载荷确实发出了，但全部被目标工具拒绝/报错 → 大概率没触达 sink（已尝试）
+SKIPPED = "skipped"            # 工具侧原因根本没发出有效测试：计划不可达 / 前置步骤报错 / 会话异常 /
+                               # 目标实参取值失败。这不等于"无漏洞"，统计时必须与 UNREACHED 分开。
 
 
 @dataclass

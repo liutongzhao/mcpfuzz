@@ -9,11 +9,12 @@ cli.console 和 cli.main 决定，内核不感知呈现方式——没挂任何 
   connect.ok / connect.fail              驱动层连接结果
   sink.start / sink.labeled / sink.done  sink 推断的进度与逐参数结果
   attack.plan                            编排器为某工具定的调用计划
-  attack.tool.error                      该工具的会话异常（跳过，不中断整体）
-  launchpad.fail                         发射台没搭起来（前置步骤失败/取值失败）
+  attack.tool.error                      该工具会话重试耗尽（标为未测成，不中断整体）
+  launchpad.fail                         发射台没搭起来、目标实参取不到值（未测成）
+  launchpad.warn                         前置步骤有失败但仍继续测试目标工具
   attack.param.start                     开始对某参数发载荷
   payload.sent                           每条载荷的发送结果（debug，仅 -vv）
-  finding.confirmed / finding.clean / finding.unreached   三态判定结论
+  finding.confirmed / finding.clean / finding.unreached / finding.skipped   四态判定结论
   report.saved                           报告落盘路径
 """
 from __future__ import annotations

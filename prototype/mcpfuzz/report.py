@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, UNREACHED
+from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED
 
 
 def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
@@ -11,6 +11,8 @@ def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
     confirmed = [f for f in findings if f.status == CONFIRMED]
     clean = [f for f in findings if f.status == LIKELY_CLEAN]
     unreached = [f for f in findings if f.status == UNREACHED]
+    skipped = [f for f in findings if f.status == SKIPPED]
+    tested = len(confirmed) + len(clean) + len(unreached)
 
     lines = [
         f"# MCPFuzz 检测报告 — {catalog.server_name or '?'} {catalog.server_version or ''}".rstrip(),
@@ -22,12 +24,15 @@ def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
         "",
         f"## 结论总览",
         "",
-        f"| 状态 | 数量 |",
-        f"|---|---|",
-        f"| ● 确认漏洞 | {len(confirmed)} |",
-        f"| 疑似无漏洞 | {len(clean)} |",
-        f"| 未触达 | {len(unreached)} |",
-        f"| 总计 | {len(findings)} |",
+        f"> 实际测试覆盖：{tested}/{len(findings)} 个参数（“未测成”不计入）。",
+        "",
+        f"| 状态 | 数量 | 含义 |",
+        f"|---|---|---|",
+        f"| ● 确认漏洞 | {len(confirmed)} | 判定器命中硬证据 |",
+        f"| 疑似无漏洞 | {len(clean)} | 载荷正常返回、无信号 |",
+        f"| 未触达 | {len(unreached)} | 载荷已发出但全被拒/报错 |",
+        f"| 未测成 | {len(skipped)} | 工具侧原因未能发出有效测试，**不代表无漏洞** |",
+        f"| 总计 | {len(findings)} | |",
         "",
     ]
 
@@ -43,9 +48,16 @@ def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
         lines.append("")
 
     if unreached:
-        lines.append("## 未触达（可能需要更强的前置取值 / 不同基线）")
+        lines.append("## 未触达（载荷已发出，但全部被目标工具拒绝/报错）")
         lines.append("")
         for f in unreached:
+            lines.append(f"- `{f.tool}.{f.param}` ({f.sink})：{f.note or '无说明'}")
+        lines.append("")
+
+    if skipped:
+        lines.append("## 未测成（工具侧原因，未能发出有效测试 —— 不代表无漏洞，建议复测）")
+        lines.append("")
+        for f in skipped:
             lines.append(f"- `{f.tool}.{f.param}` ({f.sink})：{f.note or '无说明'}")
         lines.append("")
 
