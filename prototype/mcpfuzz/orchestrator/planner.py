@@ -44,13 +44,29 @@ EXAMPLE = """Example — target tool `searchProductForMcp(deptId:int required, q
 ],"reachable":true,"note":""}"""
 
 
+_PATH_KEYS = ("path", "file", "dir", "folder", "location", "dest", "filepath")
+_URL_KEYS = ("url", "uri", "endpoint", "link", "href")
+
+
 def _fallback_literal(param):
+    """给参数一个合理的良性值。通用启发（不针对任何服务器）：路径型参数宁用**绝对临时路径**，
+    避免 schema 默认的相对值（常是 '.' / ''）依赖"当前工作目录"上下文而在独立探测时报错。"""
+    name = (param.path or "").lower()
+    stringy = param.type in ("string", "union", "unknown")
+    pathlike = stringy and any(k in name for k in _PATH_KEYS)
+    if pathlike and param.default in (None, ".", "", "./", "cwd"):
+        return "/tmp/mcpfuzz_probe"
     if param.default is not None:
         return param.default
     if param.example is not None:
         return param.example
     if param.enum:
         return param.enum[0]
+    if stringy:
+        if pathlike:
+            return "/tmp/mcpfuzz_probe"
+        if any(k in name for k in _URL_KEYS):
+            return "http://example.com/"
     return {"string": "test", "integer": 1, "number": 1, "boolean": True,
             "array": [], "object": {}}.get(param.type, "test")
 
