@@ -72,21 +72,35 @@ class Orchestrator:
                                    steps=len(p.steps), reachable=p.reachable, note=p.note,
                                    param_count=len(sink_params))
                 continue
-            findings += self._attack_tool(tool, sink_params, timeout, poll_window, retries,
-                                          idx, total, use_agent, plan_cache, agent_cache)
+            # 序列构建在攻击会话之外完成（智能体自建 MCP 连接做发现），再开会话确定性回放
+            plan = self._build_plan_sync(tool, use_agent, plan_cache, agent_cache)
+            self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
+                               steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
+                               param_count=len(sink_params))
+            findings += self._attack_tool(tool, plan, sink_params, timeout, poll_window, retries)
         return findings
 
-    def _attack_tool(self, tool, sink_params, timeout, poll_window, retries,
-                     idx, total, use_agent, plan_cache, agent_cache) -> list:
-        """对单个工具：建会话 → 构建序列（智能体闭环，回退一次性规划）→ 回放+多通道判定。
-        每次尝试独立事件循环，隔离上一工具可能残留的 anyio/事件循环损坏状态。会话建立失败按
-        retries 重连；全部失败后做存活探测，如实标 SKIPPED（未测成），不冒充"未触达/无漏洞"。
+    def _build_plan_sync(self, tool, use_agent, plan_cache, agent_cache):
+        """序列构建：优先 LangGraph 智能体（自建连接实跑产配方）；异常/未启用回退一次性规划 / schema 兜底。"""
+        if use_agent:
+            try:
+                return asyncio.run(agent.build_sequence(self.url, self.headers, tool, self.catalog,
+                                                        self.settings, self.reporter, cache_dir=agent_cache))
+            except Exception as e:
+                self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
+        if self.settings and self.settings.llm_plan:
+            return planner.plan(tool, self.catalog, cache_dir=plan_cache)
+        return planner.fallback_plan(tool)
+
+    def _attack_tool(self, tool, plan, sink_params, timeout, poll_window, retries) -> list:
+        """回放给定计划并对每个参数多通道判定。每次尝试独立事件循环，隔离上一工具可能残留的
+        anyio/事件循环损坏状态。会话建立失败按 retries 重连；全部失败后做存活探测，如实标
+        SKIPPED（未测成），不冒充"未触达/无漏洞"。
         """
         last_err = None
         for attempt in range(1, retries + 1):
             try:
-                return asyncio.run(self._attack_once(tool, sink_params, timeout, poll_window,
-                                                     idx, total, use_agent, plan_cache, agent_cache))
+                return asyncio.run(self._attack_once(tool, plan, sink_params, timeout, poll_window))
             except Exception as e:                      # 仅会话建立阶段才会抛到这里
                 last_err = e
                 if attempt < retries:
@@ -99,14 +113,8 @@ class Orchestrator:
         return [Finding(tool.name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
                 for ps in sink_params]
 
-    async def _attack_once(self, tool, sink_params, timeout, poll_window,
-                           idx, total, use_agent, plan_cache, agent_cache) -> list:
+    async def _attack_once(self, tool, plan, sink_params, timeout, poll_window) -> list:
         async with open_session(self.url, self.headers, timeout=timeout) as session:
-            plan = await self._build_plan(session, tool, use_agent, plan_cache, agent_cache)
-            self.reporter.emit("attack.plan", tool=tool.name, index=idx, total=total,
-                               steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
-                               param_count=len(sink_params))
-
             async def liveness():
                 return await ping(self.url, self.headers, timeout)
 
@@ -121,18 +129,6 @@ class Orchestrator:
             return await run_tool(session, plan, sink_params, self.synth, self.oracle,
                                   poll_window=poll_window, reporter=self.reporter,
                                   settings=self.settings, liveness=liveness, read_back=read_back)
-
-    async def _build_plan(self, session, tool, use_agent, plan_cache, agent_cache):
-        """序列构建：优先用闭环智能体（实跑产配方）；异常或未启用时回退一次性规划 / schema 兜底。"""
-        if use_agent:
-            try:
-                return await agent.build_sequence(session, tool, self.catalog, self.settings,
-                                                  self.reporter, cache_dir=agent_cache)
-            except Exception as e:
-                self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
-        if self.settings and self.settings.llm_plan:
-            return planner.plan(tool, self.catalog, cache_dir=plan_cache)
-        return planner.fallback_plan(tool)
 
 
 async def _safe_ping(url, headers, timeout) -> bool:

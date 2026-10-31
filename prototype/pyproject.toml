@@ -6,6 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
     "mcp",
     "rich>=13",
+    "langgraph>=1",
+    "langchain-mcp-adapters>=0.3",
+    "langchain-openai>=1",
 ]
 
 [project.scripts]
