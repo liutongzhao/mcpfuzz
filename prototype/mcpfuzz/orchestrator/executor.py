@@ -23,23 +23,21 @@ from .types import CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Findi
 # 不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误报。
 _AI_MARKERS = re.compile(r"(?i)(usage:|\bv?\d+\.\d+(?:\.\d+)?\b|unknown option|unrecognized option)")
 
-# 程序/工具自身执行后产生的报错（载荷已抵达 sink，只是被程序当非法参数拒了）→ 视为"已触达"。
-_PROGRAM_ERR = re.compile(r"(?i)(fatal:|exit code|stderr:|bad revision|invalid object|"
-                          r"not something we can merge|does not have any commits|not a git repository|"
-                          r"traversal detected|working directory does not exist|already exists)")
-# 发到后端程序之前就被输入/schema 校验挡下 → 未触达 sink。
+# 发到后端程序之前就被 schema/协议级输入校验挡下 → 未触达 sink。这些是 MCP 框架 / JSON-Schema
+# 通用报错（zod / JSON-RPC -32602 等），与具体服务器无关——不枚举任何某个程序的报错原文。
 _VALIDATION_ERR = re.compile(r"(?i)(input validation error|invalid arguments for tool|"
                              r"expected (?:number|array|object|string|boolean|one of)|"
-                             r"no session working directory|invalid input|invalid enum)")
+                             r"invalid input|invalid enum|required property|-32602)")
 
 
-def _is_program_error(text: str) -> bool:
-    """报错是否出自"程序已执行"（已触达 sink）而非"输入/schema 校验"（未触达）。"""
-    if not text:
+def _reached_via_error(res: dict) -> bool:
+    """工具**业务层**返回了错误（有响应正文、非传输异常），且不是 schema/协议级输入校验错 →
+    载荷已抵达后端程序、只是被当非法参数拒了（已触达 sink）。通用判定，不含任何服务器特定词。
+    """
+    text = res.get("text") or ""
+    if not text or res.get("exc"):      # 传输异常 / 无响应 → 没触达
         return False
-    if _VALIDATION_ERR.search(text):
-        return False   # schema/输入校验优先：还没到后端程序
-    return bool(_PROGRAM_ERR.search(text))
+    return not _VALIDATION_ERR.search(text)
 
 
 class _NullReporter:
@@ -211,7 +209,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             err_text = res.get("exc") or text or ""
             if err_text:
                 last_err = err_text
-            if _is_program_error(err_text):
+            if _reached_via_error(res):
                 saw_program_error = True
         else:
             saw_ok = True
