@@ -13,7 +13,7 @@ from mcpfuzz.payload import PayloadSynthesizer
 
 from . import agent, planner
 from .executor import run_tool
-from .types import SKIPPED, Finding
+from .types import SKIPPED, Finding, Plan
 
 
 class _NullReporter:
@@ -82,7 +82,19 @@ class Orchestrator:
         return findings
 
     def _build_plan_sync(self, tool, use_agent, plan_cache, agent_cache):
-        """序列构建：优先 LangGraph 智能体（自建连接实跑产配方）；异常/未启用回退一次性规划 / schema 兜底。"""
+        """序列构建。先判"是否需要前置"：用良性值直接试调一次目标工具——
+        **调通即为独立工具，用单步计划、不惊动智能体/一次性规划**；调不通才去建序列。
+        这是最可靠的通用判据（不静态猜依赖、不针对任何服务器），且顺带产出"需序列构建的工具占比"指标。
+        """
+        want_llm_plan = self.settings is None or self.settings.llm_plan
+        if want_llm_plan:
+            base_plan = planner.fallback_plan(tool)
+            if self._direct_reachable(tool, base_plan):
+                base_plan.note = "直连可达（输入不依赖其它工具，无需序列构建）"
+                self.reporter.emit("plan.direct", level="debug", tool=tool.name)
+                return base_plan
+            self.reporter.emit("plan.needs_sequence", level="debug", tool=tool.name)
+
         if use_agent:
             try:
                 return self._agent_run(agent.build_sequence(
@@ -90,9 +102,28 @@ class Orchestrator:
                     self.reporter, cache_dir=agent_cache))
             except Exception as e:
                 self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
-        if self.settings and self.settings.llm_plan:
+        if want_llm_plan:
             return planner.plan(tool, self.catalog, cache_dir=plan_cache)
         return planner.fallback_plan(tool)
+
+    def _direct_reachable(self, tool, base_plan) -> bool:
+        """用 base_plan 的 schema/良性实参直接调一次目标工具：非报错即独立可达（无需前置）。
+
+        用我方 driver 发一次良性调用（不含载荷）。驱动每次调用新建/关闭自己的连接、不跨事件循环
+        缓存，故这里用 asyncio.run 独立事件循环是安全的（与智能体那个"Event loop is closed"无关）。
+        """
+        last = base_plan.steps[-1]
+        args = {k: v.get("value") for k, v in (last.args or {}).items() if isinstance(v, dict)}
+        timeout = self.settings.timeout if self.settings else None
+        try:
+            res = asyncio.run(self._probe_call(tool.name, args, timeout))
+        except Exception:
+            return False   # 连接/传输失败 → 保守地当作"需要进一步处理"，交给智能体
+        return not res.get("is_error", True)
+
+    async def _probe_call(self, tool_name, args, timeout):
+        async with open_session(self.url, self.headers, timeout=timeout) as session:
+            return await call_on(session, tool_name, args)
 
     def _agent_run(self, coro):
         """在**常驻**事件循环上跑智能体协程。
