@@ -8,7 +8,7 @@ import asyncio
 import time
 from pathlib import Path
 
-from mcpfuzz.driver import open_session, ping
+from mcpfuzz.driver import call_on, open_session, ping
 from mcpfuzz.payload import PayloadSynthesizer
 
 from . import agent, planner
@@ -34,6 +34,7 @@ class Orchestrator:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.synth = PayloadSynthesizer(oracle)
         self._tools_by_name = {t.name: t for t in catalog.tools}
+        self._reader = _find_reader(catalog)   # cross_tool canary 读回器（可能为 None）
         self.reporter = reporter or _NullReporter()
         self.settings = settings
 
@@ -105,9 +106,21 @@ class Orchestrator:
             self.reporter.emit("attack.plan", tool=tool.name, index=idx, total=total,
                                steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
                                param_count=len(sink_params))
+
+            async def liveness():
+                return await ping(self.url, self.headers, timeout)
+
+            read_back = None
+            if self._reader and self._reader[0] != tool.name:
+                rtool, rpath, rother = self._reader
+
+                async def read_back(path, _rt=rtool, _rp=rpath, _ro=rother):
+                    res = await call_on(session, _rt, {**_ro, _rp: path})
+                    return res.get("text", "")
+
             return await run_tool(session, plan, sink_params, self.synth, self.oracle,
                                   poll_window=poll_window, reporter=self.reporter,
-                                  settings=self.settings)
+                                  settings=self.settings, liveness=liveness, read_back=read_back)
 
     async def _build_plan(self, session, tool, use_agent, plan_cache, agent_cache):
         """序列构建：优先用闭环智能体（实跑产配方）；异常或未启用时回退一次性规划 / schema 兜底。"""
@@ -132,3 +145,33 @@ async def _safe_ping(url, headers, timeout) -> bool:
 def _repr_class(ps):
     cls = ps.ranked_classes() if hasattr(ps, "ranked_classes") else []
     return cls[0] if cls else "unknown"
+
+
+_READ_KEYS = ("read", "cat", "show", "get", "content", "dump", "view", "open", "load")
+_PATH_KEYS = ("path", "file", "filename", "filepath", "location")
+
+
+def _find_reader(catalog):
+    """在工具目录里找一个'给路径返回文件内容'的读工具，供 cross_tool canary 读回。
+
+    启发式、通用、不针对任何服务器：工具名/描述含读取类词 + 有一个路径型字符串参数，
+    取必填参数最少者。返回 (tool_name, path_param, benign_other_required_args) 或 None。
+    """
+    best = None
+    for t in catalog.tools:
+        hay = (t.name + " " + (t.description or "")).lower()
+        if not any(k in hay for k in _READ_KEYS):
+            continue
+        ppath = None
+        for p in t.params:
+            if p.type in ("string", "union", "unknown") and any(k in p.path.lower() for k in _PATH_KEYS):
+                ppath = p.path
+                break
+        if ppath is None:
+            continue
+        nreq = sum(1 for p in t.params if p.required)
+        if best is None or nreq < best[0]:
+            others = {p.path: planner._fallback_literal(p) for p in t.params
+                      if p.required and p.path != ppath}
+            best = (nreq, t.name, ppath, others)
+    return (best[1], best[2], best[3]) if best else None

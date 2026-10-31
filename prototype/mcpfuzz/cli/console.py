@@ -152,6 +152,8 @@ def _fmt_line(ev: Event) -> str | None:
         reach = "" if d.get("reachable", True) else "  [不可达]"
         return (f"[plan] ({d.get('index')}/{d.get('total')}) {d.get('tool')}: "
                 f"{d.get('steps')} 步, {d.get('param_count')} 个参数待测{reach}{note}")
+    if t == "server.crash":
+        return f"⚠ 服务器无响应（疑似 DoS）  {d.get('tool')}: {d.get('note')}"
     if t == "attack.tool.error":
         return f"[异常] {d.get('tool')} 会话异常: {d.get('error')}"
     if t == "launchpad.fail":
@@ -258,7 +260,7 @@ class RichConsole(_BaseTextConsole):
         style = None
         if ev.type == "finding.confirmed":
             style = "bold red"
-        elif ev.type in ("connect.fail", "attack.tool.error"):
+        elif ev.type in ("connect.fail", "attack.tool.error", "server.crash"):
             style = "red"
         elif ev.type == "finding.suspected":
             style = "magenta"

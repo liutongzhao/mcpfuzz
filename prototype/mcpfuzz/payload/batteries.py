@@ -46,6 +46,12 @@ def _ci_battery() -> list[dict]:
         out.append({"value": ctx.format(c="curl {CALLBACK}"), "channel": "oob",
                     "expect": None, "control": None, "delay_target": 0.0,
                     "technique": f"ci:curl:{ctx[:4]}"})
+    # cross_tool：写 canary 文件到 /tmp/{token}，再由读工具读回（网络无关、无需回显）。
+    # 排在末尾（低优先）：仅当目标服务存在配套读文件工具、且前面通道未确认时才真正发挥作用。
+    for ctx in _CI_CONTEXTS[:3]:
+        out.append({"value": ctx.format(c="echo {TOKEN} > /tmp/{TOKEN}"), "channel": "cross_tool",
+                    "expect": None, "control": None, "delay_target": 0.0,
+                    "technique": f"ci:writecanary:{ctx[:4]}"})
     return out
 
 

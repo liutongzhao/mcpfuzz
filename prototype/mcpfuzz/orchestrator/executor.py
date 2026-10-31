@@ -47,8 +47,12 @@ async def _resolve_args(arg_specs: dict, step_responses: dict) -> tuple[dict, li
 
 
 async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=(3, 2.0),
-                   reporter=None, settings=None) -> list:
-    """plan.steps[-1] 为目标工具。sink_params: 该工具待测的 ParamSinkPrior 列表。返回 Finding 列表。"""
+                   reporter=None, settings=None, liveness=None, read_back=None) -> list:
+    """plan.steps[-1] 为目标工具。sink_params: 该工具待测的 ParamSinkPrior 列表。返回 Finding 列表。
+
+    liveness: 可选 async 存活探测（无参返回 bool），用于崩溃/DoS 观测。
+    read_back: 可选 async(path)->text 读回器（配套读文件工具），用于 cross_tool canary 判定。
+    """
     reporter = reporter or _NullReporter()
     target = plan.steps[-1].tool
     seq_trace = []   # 可复现：前置调用记录
@@ -98,18 +102,40 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
         try:
             f = await _attack_param(session, target, base_args, ps, synthesizer, oracle,
                                     seq_trace, poll_window, reporter, settings,
-                                    baseline_text, base_latency, baseline_ok)
+                                    baseline_text, base_latency, baseline_ok, read_back)
         except (Exception, asyncio.CancelledError) as e:
             note = f"连接异常中止（可能是网络抖动打断了正在进行的调用）：{str(e)[:150]}"
+            # 存活探测：区分"服务器被打挂(DoS)"与"网络抖动"
+            if liveness is not None and not await _is_alive(liveness):
+                note += "；事后存活探测失败，服务器可能已崩溃/无响应（疑似 DoS 信号）"
+                reporter.emit("server.crash", tool=target, note=note)
             reporter.emit("attack.tool.error", tool=target, error=note)
             for ps2 in sink_params[i:]:
                 f2 = Finding(target, ps2.param_path, _repr_class(ps2), SKIPPED, note=note)
                 findings.append(f2)
                 _emit_finding(reporter, f2)
-            break
+            return findings
         findings.append(f)
         _emit_finding(reporter, f)
+
+    # 整套打完后一次存活探测（DoS 观测）：有载荷会把服务器打到无响应，即便单次调用只表现为报错
+    if liveness is not None and not await _is_alive(liveness):
+        reporter.emit("server.crash", tool=target,
+                      note="整套测试后存活探测失败，服务器可能已崩溃/无响应（疑似 DoS 信号）")
     return findings
+
+
+async def _is_alive(liveness) -> bool:
+    try:
+        return bool(await liveness())
+    except Exception:
+        return False
+
+
+def _shaped_args(base_args, prior, value):
+    """按参数结构契约摆放载荷：array 型参数把标量载荷包成单元素列表，避免'expected array'被 pre-sink 拒。"""
+    v = [value] if getattr(prior, "param_type", None) == "array" else value
+    return {**base_args, prior.param_path: v}
 
 
 def _skipped_all(target, sink_params, note, reporter) -> list:
@@ -135,7 +161,8 @@ def _emit_finding(reporter, f) -> None:
 
 
 async def _attack_param(session, target, base_args, prior, synthesizer, oracle, seq_trace,
-                        poll_window, reporter, settings, baseline_text, baseline_latency, baseline_ok):
+                        poll_window, reporter, settings, baseline_text, baseline_latency,
+                        baseline_ok, read_back=None):
     probes = synthesizer.synthesize(prior)
     repr_cls = _repr_class(prior)
     param = prior.param_path
@@ -153,7 +180,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     saw_ok = False
     last_err = ""
     for p in probes:
-        args = {**base_args, param: p.value}
+        args = _shaped_args(base_args, prior, p.value)
         res, latency = await _timed_call(session, target, args)
         text = res["text"] or ""
         reporter.emit("payload.sent", level="debug", tool=target, param=param, channel=p.channel,
@@ -187,6 +214,18 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             ev = _diff_hit(p.vuln_class, baseline_text, text)
             if ev:
                 return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "differential")
+        elif p.channel == "cross_tool":
+            # 写 canary 的载荷已在上面发出；若有配套读工具，读回 /tmp/{token} 并匹配
+            if read_back is not None:
+                canary_path = "/tmp/" + p.probe.token
+                try:
+                    back = await read_back(canary_path)
+                except Exception:
+                    back = ""
+                if back and p.probe.token in back:
+                    ev = {"type": "cross_tool", "reader_path": canary_path, "snippet": back[:160]}
+                    return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "cross_tool")
+            # 无配套读工具或未读到 → 不计入，继续
         elif p.channel == "oob":
             oob_pending.append((p, args))
         if delay:
@@ -210,7 +249,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     # 仅弱证据 → 疑似有
     if weak:
         cls, p, ev = weak[0]
-        args = {**base_args, param: p.value}
+        args = _shaped_args(base_args, prior, p.value)
         return Finding(target, param, cls, SUSPECTED, payload=p.value, channel=ev.get("channel", p.channel),
                        evidence=ev,
                        sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],

@@ -51,9 +51,11 @@ class PayloadSynthesizer:
         expect = tpl.get("expect")
         probe = None
         meta = {"tool": tool, "param": param, "sink": cls, "technique": tpl.get("technique", "")}
-        if channel in ("oob", "inband"):
-            probe = self.oracle.new_probe(channel, meta=meta, expect=expect)
-            # inband 的 embed 即 token；oob 的 embed 即完整回连 URL
+        if channel in ("oob", "inband", "cross_tool"):
+            # cross_tool 也需要一个唯一 token（写入 canary 文件再由读工具读回），按 inband 铸造
+            probe = self.oracle.new_probe("oob" if channel == "oob" else "inband",
+                                          meta=meta, expect=expect)
+            # inband/cross_tool 的 embed 即 token；oob 的 embed 即完整回连 URL
             value = value.replace("{CALLBACK}", probe.embed).replace("{TOKEN}", probe.embed)
             probe.meta["payload"] = value
         return ProbeSpec(
