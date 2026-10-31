@@ -1,6 +1,7 @@
-"""编排器：目标导向攻击序列 + 大模型假设依赖 + 运行时取值 + 逐跳验证 + 三态判定。"""
+"""编排器：序列构建（发射台）+ 逐跳回放验证 + 多通道判定 + 五态结论。"""
 from .core import Orchestrator
-from .types import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED, Finding, Plan, Step
+from .types import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED,
+                    Finding, Plan, Step)
 
 __all__ = ["Orchestrator", "Finding", "Plan", "Step",
-           "CONFIRMED", "LIKELY_CLEAN", "UNREACHED", "SKIPPED"]
+           "CONFIRMED", "SUSPECTED", "LIKELY_CLEAN", "UNREACHED", "SKIPPED"]

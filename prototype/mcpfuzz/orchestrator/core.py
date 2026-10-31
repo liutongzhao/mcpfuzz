@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 
 from mcpfuzz.driver import open_session, ping
-from mcpfuzz.payload import PHASE1_SINKS, PayloadSynthesizer
+from mcpfuzz.payload import PayloadSynthesizer
 
-from . import planner
+from . import agent, planner
 from .executor import run_tool
 from .types import SKIPPED, Finding
 
@@ -38,21 +38,23 @@ class Orchestrator:
         self.settings = settings
 
     def run(self, param_sinks, only_tools=None, dry_run: bool = False) -> list:
-        """param_sinks: sink.ParamSink 列表。only_tools: 限定工具名集合(调试用)。
+        """param_sinks: sink.ParamSinkPrior 列表。only_tools: 限定工具名集合(调试用)。
         dry_run: 只出计划、不发任何载荷（recon 用）。返回 Finding 列表。"""
-        # 只保留第一期能出载荷的 sink，并按工具分组
+        # 保留所有非惰性、有启用类别的参数（不按单标签门控——floor 保证每类都会被测），按工具分组
         by_tool: dict[str, list] = {}
         for ps in param_sinks:
             if only_tools and ps.tool not in only_tools:
                 continue
-            if any(s.type in PHASE1_SINKS for s in ps.sinks):
+            if not getattr(ps, "inert", False) and ps.class_weights:
                 by_tool.setdefault(ps.tool, []).append(ps)
         return self._run_all(by_tool, dry_run)
 
     def _run_all(self, by_tool, dry_run) -> list:
         findings = []
         plan_cache = self.cache_dir / ".plan_cache" if self.cache_dir else None
+        agent_cache = self.cache_dir / ".agent_cache" if self.cache_dir else None
         use_llm_plan = self.settings.llm_plan if self.settings else True
+        use_agent = (getattr(self.settings, "sequence_agent", True) if self.settings else True) and use_llm_plan
         timeout = self.settings.timeout if self.settings else None
         retries = max(1, self.settings.retries) if self.settings else 3
         poll_window = (self.settings.poll_rounds, self.settings.poll_interval) if self.settings else (3, 2.0)
@@ -61,28 +63,29 @@ class Orchestrator:
             tool = self._tools_by_name.get(tool_name)
             if tool is None:
                 continue
-            if use_llm_plan:
-                p = planner.plan(tool, self.catalog, cache_dir=plan_cache)
-            else:
-                p = planner.fallback_plan(tool)
-            self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
-                               steps=len(p.steps), reachable=p.reachable, note=p.note,
-                               param_count=len(sink_params))
             if dry_run:
+                # dry-run 只预览假设计划（不实跑、不走智能体），保持"未发送任何请求"的语义
+                p = planner.plan(tool, self.catalog, cache_dir=plan_cache) if use_llm_plan \
+                    else planner.fallback_plan(tool)
+                self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
+                                   steps=len(p.steps), reachable=p.reachable, note=p.note,
+                                   param_count=len(sink_params))
                 continue
-            findings += self._attack_tool(tool_name, p, sink_params, timeout, poll_window, retries)
+            findings += self._attack_tool(tool, sink_params, timeout, poll_window, retries,
+                                          idx, total, use_agent, plan_cache, agent_cache)
         return findings
 
-    def _attack_tool(self, tool_name, p, sink_params, timeout, poll_window, retries) -> list:
-        """对单个工具发起攻击。每次尝试用独立事件循环，彻底隔离上一工具可能残留的
-        anyio/事件循环损坏状态——这是之前一次会话崩溃后、后续所有工具都级联报
-        `generator didn't yield` 的根因。会话建立失败按 retries 重连重试；全部失败后
-        做一次存活探测，把结果如实标为 SKIPPED（未能测试），而非冒充"未触达/无漏洞"。
+    def _attack_tool(self, tool, sink_params, timeout, poll_window, retries,
+                     idx, total, use_agent, plan_cache, agent_cache) -> list:
+        """对单个工具：建会话 → 构建序列（智能体闭环，回退一次性规划）→ 回放+多通道判定。
+        每次尝试独立事件循环，隔离上一工具可能残留的 anyio/事件循环损坏状态。会话建立失败按
+        retries 重连；全部失败后做存活探测，如实标 SKIPPED（未测成），不冒充"未触达/无漏洞"。
         """
         last_err = None
         for attempt in range(1, retries + 1):
             try:
-                return asyncio.run(self._attack_once(p, sink_params, timeout, poll_window))
+                return asyncio.run(self._attack_once(tool, sink_params, timeout, poll_window,
+                                                     idx, total, use_agent, plan_cache, agent_cache))
             except Exception as e:                      # 仅会话建立阶段才会抛到这里
                 last_err = e
                 if attempt < retries:
@@ -91,15 +94,32 @@ class Orchestrator:
         note = f"会话异常（重试 {retries} 次仍失败）：{str(last_err)[:120]}"
         if not alive:
             note += "；且事后存活探测失败，服务器可能已崩溃/无响应（疑似 DoS 信号）"
-        self.reporter.emit("attack.tool.error", tool=tool_name, error=note)
-        return [Finding(tool_name, ps.param_path, _sink_of(ps), SKIPPED, note=note)
+        self.reporter.emit("attack.tool.error", tool=tool.name, error=note)
+        return [Finding(tool.name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
                 for ps in sink_params]
 
-    async def _attack_once(self, p, sink_params, timeout, poll_window) -> list:
+    async def _attack_once(self, tool, sink_params, timeout, poll_window,
+                           idx, total, use_agent, plan_cache, agent_cache) -> list:
         async with open_session(self.url, self.headers, timeout=timeout) as session:
-            return await run_tool(session, p, sink_params, self.synth, self.oracle,
+            plan = await self._build_plan(session, tool, use_agent, plan_cache, agent_cache)
+            self.reporter.emit("attack.plan", tool=tool.name, index=idx, total=total,
+                               steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
+                               param_count=len(sink_params))
+            return await run_tool(session, plan, sink_params, self.synth, self.oracle,
                                   poll_window=poll_window, reporter=self.reporter,
                                   settings=self.settings)
+
+    async def _build_plan(self, session, tool, use_agent, plan_cache, agent_cache):
+        """序列构建：优先用闭环智能体（实跑产配方）；异常或未启用时回退一次性规划 / schema 兜底。"""
+        if use_agent:
+            try:
+                return await agent.build_sequence(session, tool, self.catalog, self.settings,
+                                                  self.reporter, cache_dir=agent_cache)
+            except Exception as e:
+                self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
+        if self.settings and self.settings.llm_plan:
+            return planner.plan(tool, self.catalog, cache_dir=plan_cache)
+        return planner.fallback_plan(tool)
 
 
 async def _safe_ping(url, headers, timeout) -> bool:
@@ -109,5 +129,6 @@ async def _safe_ping(url, headers, timeout) -> bool:
         return False
 
 
-def _sink_of(ps):
-    return ps.sinks[0].type if ps.sinks else "unknown"
+def _repr_class(ps):
+    cls = ps.ranked_classes() if hasattr(ps, "ranked_classes") else []
+    return cls[0] if cls else "unknown"

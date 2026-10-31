@@ -13,7 +13,8 @@ from pathlib import Path
 
 from mcpfuzz.driver import fetch_catalog_sync
 from mcpfuzz.oracle import Oracle
-from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED, Orchestrator
+from mcpfuzz.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED,
+                                   Orchestrator)
 from mcpfuzz.report import render_markdown
 from mcpfuzz.sink import SinkInferencer
 from mcpfuzz.targetcfg import resolve_target
@@ -41,7 +42,9 @@ def make_run_dir(out_dir: Path, run_name: str | None, server_hint: str) -> Path:
 
 def _param_sink_dict(p) -> dict:
     return {"tool": p.tool, "param_path": p.param_path, "param_type": p.param_type,
-            "sinks": [vars(s) for s in p.sinks]}
+            "inert": p.inert, "inert_reason": p.inert_reason,
+            "class_weights": {c: round(w, 3) for c, w in p.class_weights.items()},
+            "provenance": p.provenance}
 
 
 def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, reporter,
@@ -102,7 +105,7 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     if exclude_tools or only_sinks:
         param_sinks = [p for p in param_sinks
                       if p.tool not in exclude_tools
-                      and (only_sinks is None or any(s.type in only_sinks for s in p.sinks))]
+                      and (only_sinks is None or any(c in only_sinks for c in p.class_weights))]
 
     oracle = Oracle(settings.oob_callback, settings.oob_query)
     # Orchestrator 内部会在 cache_dir 下建 .plan_cache/ 子目录；传 run_dir 本身即可
@@ -111,6 +114,7 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     findings = orch.run(param_sinks, only_tools=only_tools, dry_run=settings.dry_run)
 
     confirmed = sum(f.status == CONFIRMED for f in findings)
+    suspected = sum(f.status == SUSPECTED for f in findings)
     clean = sum(f.status == LIKELY_CLEAN for f in findings)
     unreached = sum(f.status == UNREACHED for f in findings)
     skipped = sum(f.status == SKIPPED for f in findings)
@@ -123,8 +127,9 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
         report_path.write_text(render_markdown(catalog, findings))
         reporter.emit("report.saved", path=str(report_path))
 
-    reporter.emit("run.end", duration=time.time() - t0, confirmed=confirmed, clean=clean,
-                  unreached=unreached, skipped=skipped, total=len(findings), dry_run=settings.dry_run)
+    reporter.emit("run.end", duration=time.time() - t0, confirmed=confirmed, suspected=suspected,
+                  clean=clean, unreached=unreached, skipped=skipped, total=len(findings),
+                  dry_run=settings.dry_run)
 
     if gw and settings.gateway_reset in ("after", "both"):
         _gateway_reset(gw, gw_server, "after", reporter)
@@ -174,13 +179,14 @@ def write_batch_summary(out_dir: Path, results: list[dict]) -> Path:
     lines = ["# MCPFuzz 批量扫描汇总", "",
             f"- 生成时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
             f"- 目标数：{len(results)}", "",
-            "| 目标 | 确认漏洞 | 疑似无 | 未触达 | 未测成 | 产物 |", "|---|---|---|---|---|---|"]
+            "| 目标 | 确认漏洞 | 疑似有 | 疑似无 | 未触达 | 未测成 | 产物 |",
+            "|---|---|---|---|---|---|---|"]
     for r in results:
         if r.get("error"):
-            lines.append(f"| `{r['target']}` | — | — | — | — | 失败：{r['error'][:100]} |")
+            lines.append(f"| `{r['target']}` | — | — | — | — | — | 失败：{r['error'][:100]} |")
         else:
-            lines.append(f"| `{r['target']}` | {r['confirmed']} | {r['clean']} | {r['unreached']} | "
-                         f"{r.get('skipped', 0)} | `{r['run_dir']}` |")
+            lines.append(f"| `{r['target']}` | {r['confirmed']} | {r.get('suspected', 0)} | {r['clean']} | "
+                         f"{r['unreached']} | {r.get('skipped', 0)} | `{r['run_dir']}` |")
     text = "\n".join(lines) + "\n"
     path = Path(out_dir) / "batch_summary.md"
     path.write_text(text)

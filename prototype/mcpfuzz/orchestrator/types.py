@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# 四态判定
-CONFIRMED = "confirmed"        # 判定器命中 → 确认漏洞
-LIKELY_CLEAN = "likely_clean"  # 调用正常返回但无信号 → 大概率到了 sink 无漏洞
-UNREACHED = "unreached"        # 载荷确实发出了，但全部被目标工具拒绝/报错 → 大概率没触达 sink（已尝试）
+# 五态判定（见 docs/判定方法论.md）
+CONFIRMED = "confirmed"        # 出现铁证，或可证经复测 → 确认漏洞
+SUSPECTED = "suspected"        # 仅弱证据（错误指纹 / SSRF 回连未越边界）→ 疑似有，待人工复核
+LIKELY_CLEAN = "likely_clean"  # 确有证据表明已触达 sink，但全套无命中 → 疑似无漏洞
+UNREACHED = "unreached"        # 载荷确实发出了，但全部被目标工具拒绝/报错且基线不可达 → 可能没触达 sink
 SKIPPED = "skipped"            # 工具侧原因根本没发出有效测试：计划不可达 / 前置步骤报错 / 会话异常 /
                                # 目标实参取值失败。这不等于"无漏洞"，统计时必须与 UNREACHED 分开。
 

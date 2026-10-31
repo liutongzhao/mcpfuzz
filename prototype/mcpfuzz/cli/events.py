@@ -8,15 +8,16 @@ cli.console 和 cli.main 决定，内核不感知呈现方式——没挂任何 
   run.start / run.end                    一次扫描的起止
   connect.ok / connect.fail              驱动层连接结果
   sink.start / sink.labeled / sink.done  sink 推断的进度与逐参数结果
-  attack.plan                            编排器为某工具定的调用计划
+  attack.plan                            编排器/序列构建为某工具定的调用计划
+  agent.round / agent.done / agent.cache_hit / agent.error   序列构建智能体的闭环进度（debug）
   attack.tool.error                      该工具会话重试耗尽（标为未测成，不中断整体）
   launchpad.fail                         发射台没搭起来、目标实参取不到值（未测成）
   launchpad.warn                         前置步骤有失败但仍继续测试目标工具
   launchpad.step                         每个前置步骤的发送详情（debug：实参/响应/错误正文）
-  launchpad.ready                        目标工具发射台基线实参就绪（debug）
+  launchpad.ready                        目标工具发射台基线就绪，含基线响应/时延（debug）
   attack.param.start                     开始对某参数发载荷
-  payload.sent                           每条载荷的发送结果（debug，仅 -vv；文件含实参/响应/错误正文）
-  finding.confirmed / finding.clean / finding.unreached / finding.skipped   四态判定结论
+  payload.sent                           每条探针的发送结果（debug，仅 -vv；文件含实参/响应/错误/时延）
+  finding.confirmed / finding.suspected / finding.clean / finding.unreached / finding.skipped   五态判定结论
   gateway.reset / gateway.error          经 mcphub 网关检测时：后端重置结果 / 网关异常
   report.saved                           报告落盘路径
 """

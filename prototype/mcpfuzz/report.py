@@ -3,16 +3,17 @@ from __future__ import annotations
 
 import time
 
-from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED
+from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED
 
 
 def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
     meta = meta or {}
     confirmed = [f for f in findings if f.status == CONFIRMED]
+    suspected = [f for f in findings if f.status == SUSPECTED]
     clean = [f for f in findings if f.status == LIKELY_CLEAN]
     unreached = [f for f in findings if f.status == UNREACHED]
     skipped = [f for f in findings if f.status == SKIPPED]
-    tested = len(confirmed) + len(clean) + len(unreached)
+    tested = len(confirmed) + len(suspected) + len(clean) + len(unreached)
 
     lines = [
         f"# MCPFuzz 检测报告 — {catalog.server_name or '?'} {catalog.server_version or ''}".rstrip(),
@@ -28,9 +29,10 @@ def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
         "",
         f"| 状态 | 数量 | 含义 |",
         f"|---|---|---|",
-        f"| ● 确认漏洞 | {len(confirmed)} | 判定器命中硬证据 |",
-        f"| 疑似无漏洞 | {len(clean)} | 载荷正常返回、无信号 |",
-        f"| 未触达 | {len(unreached)} | 载荷已发出但全被拒/报错 |",
+        f"| ● 确认漏洞 | {len(confirmed)} | 铁证命中，或可证经复测 |",
+        f"| 疑似有 | {len(suspected)} | 仅弱证据（错误指纹 / 回连未越边界），**需人工复核** |",
+        f"| 疑似无漏洞 | {len(clean)} | 已触达但全套无命中 |",
+        f"| 未触达 | {len(unreached)} | 载荷已发出但全被拒/报错且基线不可达 |",
         f"| 未测成 | {len(skipped)} | 工具侧原因未能发出有效测试，**不代表无漏洞** |",
         f"| 总计 | {len(findings)} | |",
         "",
@@ -45,6 +47,14 @@ def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
         lines.append("## 确认漏洞")
         lines.append("")
         lines.append("（本次运行未确认任何漏洞）")
+        lines.append("")
+
+    if suspected:
+        lines.append("## 疑似有（仅弱证据，需人工复核）")
+        lines.append("")
+        for f in suspected:
+            lines.append(f"- `{f.tool}.{f.param}` ({f.sink})｜通道 {f.channel}｜载荷 `{f.payload}`"
+                         f"｜证据 `{f.evidence}`")
         lines.append("")
 
     if unreached:

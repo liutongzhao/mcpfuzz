@@ -1,4 +1,11 @@
-"""大模型层：按工具批量推断每个参数的 sink。复用中转，带本地缓存。"""
+"""大模型层：按工具**单次**推断每个参数的注入类别抬升。复用中转，带本地缓存。
+
+设计要点（见 docs/Sink推断模块设计.md）：
+- 按工具一次性判（该工具所有参数 + 全部类别一起），不多次采样（太费时且非必要——
+  地板 + 规则并集已提供召回安全网）。
+- 逐类独立打分、先推理后结论、**强制引用描述/schema 原文**作依据（引不出原话 → 不抬）。
+- 置信分 low / medium / high 三档，映射到权重档位。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -12,7 +19,7 @@ from mcpfuzz.llm_config import API_KEY, BASE_URL, MODEL
 from .types import SINK_TYPES
 
 SYSTEM = """You label MCP tool parameters for black-box server-side injection testing.
-For each parameter, decide which dangerous operation(s) its value likely flows into (the "sink"). Use ONLY these sink types:
+For each parameter, decide which dangerous operation(s) ("sink") its value plausibly flows into. Use ONLY these sink types:
 - command_injection: value reaches an OS shell / command execution
 - argument_injection: value becomes a command-line argument/flag of an invoked program
 - path_traversal: value is used as a filesystem path
@@ -20,18 +27,23 @@ For each parameter, decide which dangerous operation(s) its value likely flows i
 - query_injection: value is interpolated into a database/query language (SQL/NoSQL/Cypher/KQL/GraphQL)
 - code_injection: value is evaluated as code or a template (eval/exec/Jinja/etc.)
 
-A parameter may map to several sinks, or to none.
-IMPORTANT: judge by what the TOOL does (from its name and description), not just the parameter name. An innocuous-looking parameter can be a sink if the tool performs system/file/network/database operations with it. Parameters that are booleans, fixed enums, or purely numeric identifiers are usually none.
+Method (follow it, do not skip):
+1. First state briefly what the TOOL does, from its name and description.
+2. Then, for EACH parameter, reason about where its value could end up, and assign EACH applicable sink independently.
+3. Judge by what the TOOL does, not just the parameter name: an innocuous-looking parameter can be a sink if the tool performs system/file/network/database operations with it.
+4. GROUND every label: you MUST quote the exact phrase from the tool/parameter description (or a schema field) that supports it, in "evidence". If you cannot cite a supporting phrase, DO NOT emit that label.
+5. Confidence: "high" (description/schema clearly implies this operation), "medium" (strongly suggested), "low" (plausible but weak).
 
-For each parameter give confidence "high" or "low" and a one-sentence reason in Chinese.
+A parameter may map to several sinks, or to none (emit []).
 Return ONLY a JSON object mapping each parameter path to a list:
-{ "<param_path>": [ {"type": "...", "confidence": "high|low", "reason": "..."} ], ... }
-A parameter with no sink maps to []. Output nothing but the JSON."""
+{ "<param_path>": [ {"type": "...", "confidence": "high|medium|low", "evidence": "<quoted phrase>"} ], ... }
+Output nothing but the JSON."""
 
 
 def _call(messages, timeout=120) -> str:
-    payload = json.dumps({"model": MODEL, "messages": messages, "max_tokens": 1800})
-    # 用 curl：该中转在部分环境下 python urllib 的 SSL 会失败；且不传 temperature（会 502）
+    payload = json.dumps({"model": MODEL, "messages": messages, "max_tokens": 2000})
+    # 用 curl：该中转在部分环境下 python urllib 的 SSL 会失败；且不传 temperature（会 502），
+    # 所以无法靠 temperature=0 求稳，稳定性由本地缓存 + 地板 + 规则并集保证。
     p = subprocess.run(
         ["curl", "-sS", "-m", str(timeout), BASE_URL,
          "-H", f"Authorization: Bearer {API_KEY}", "-H", "Content-Type: application/json",
@@ -61,15 +73,20 @@ def _tool_key(tool) -> str:
 
 
 def _user_content(tool) -> str:
-    lines = [f"tool: {tool.name}", f"description: {(tool.description or '')[:600]}", "parameters:"]
+    lines = [f"tool: {tool.name}", f"description: {(tool.description or '')[:800]}", "parameters:"]
     for p in tool.params:
         enum = f" enum={p.enum[:6]}" if p.enum else ""
-        lines.append(f"  - {p.path} (type={p.type}, required={p.required}){enum}: {(p.description or '')[:160]}")
+        lines.append(f"  - {p.path} (type={p.type}, required={p.required}){enum}: {(p.description or '')[:200]}")
     return "\n".join(lines)
 
 
+def _norm_conf(v) -> str:
+    v = str(v).strip().lower()
+    return v if v in ("low", "medium", "high") else "low"
+
+
 def classify_tool(tool, cache_dir: Path | None = None, max_attempts: int = 3) -> dict:
-    """返回 {param_path: [ {type, confidence, reason} ]}，仅含合法 sink 类型。"""
+    """返回 {param_path: [ {type, confidence(low/medium/high), evidence} ]}，仅含合法 sink 类型。"""
     cache_file = None
     if cache_dir:
         cache_dir = Path(cache_dir)
@@ -89,11 +106,13 @@ def classify_tool(tool, cache_dir: Path | None = None, max_attempts: int = 3) ->
                     continue
                 clean = []
                 for lab in labels:
+                    if not isinstance(lab, dict):
+                        continue
                     t = str(lab.get("type", "")).strip()
                     if t in SINK_TYPES and t != "none":
                         clean.append({"type": t,
-                                      "confidence": "high" if str(lab.get("confidence")) == "high" else "low",
-                                      "reason": str(lab.get("reason", ""))[:200]})
+                                      "confidence": _norm_conf(lab.get("confidence")),
+                                      "evidence": str(lab.get("evidence", lab.get("reason", "")))[:200]})
                 result[path] = clean
             break
         except Exception:

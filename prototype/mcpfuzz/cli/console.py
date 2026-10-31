@@ -74,7 +74,7 @@ class _BaseTextConsole:
         self.sink_done = 0
         self.sink_total = 0
         self.cur_activity = ""      # 当前正在做的细节（供实时界面显示，证明还在跑）
-        self.counts = {"confirmed": 0, "clean": 0, "unreached": 0, "skipped": 0}
+        self.counts = {"confirmed": 0, "suspected": 0, "clean": 0, "unreached": 0, "skipped": 0}
         self.confirmed_findings: list[dict] = []
         self.dry_run = False
 
@@ -105,6 +105,8 @@ class _BaseTextConsole:
         elif ev.type == "finding.confirmed":
             self.counts["confirmed"] += 1
             self.confirmed_findings.append(d)
+        elif ev.type == "finding.suspected":
+            self.counts["suspected"] += 1
         elif ev.type == "finding.clean":
             self.counts["clean"] += 1
         elif ev.type == "finding.unreached":
@@ -165,6 +167,10 @@ def _fmt_line(ev: Event) -> str | None:
         return (f"● 确认  {d.get('tool')}.{d.get('param')}  ({d.get('sink')}, 通道 {d.get('channel')})\n"
                 f"    载荷: {d.get('payload')!r}\n"
                 f"    证据: {d.get('evidence')}")
+    if t == "finding.suspected":
+        note = f"  ({d.get('note')})" if d.get("note") else ""
+        return (f"◐ 疑似有  {d.get('tool')}.{d.get('param')}  ({d.get('sink')}, 通道 {d.get('channel')})"
+                f"{note}\n    证据: {d.get('evidence')}")
     if t == "finding.clean":
         return f"○ 疑似无漏洞  {d.get('tool')}.{d.get('param')}  ({d.get('sink')})"
     if t == "finding.unreached":
@@ -179,8 +185,8 @@ def _fmt_line(ev: Event) -> str | None:
         if d.get("dry_run"):
             return "（dry-run，未发送任何载荷）"
         return (f"结束  用时 {d.get('duration', 0):.1f}s  "
-                f"确认 {d.get('confirmed')} | 疑似无 {d.get('clean')} | 未触达 {d.get('unreached')} | "
-                f"未测成 {d.get('skipped', 0)} | 总计 {d.get('total')}")
+                f"确认 {d.get('confirmed')} | 疑似有 {d.get('suspected', 0)} | 疑似无 {d.get('clean')} | "
+                f"未触达 {d.get('unreached')} | 未测成 {d.get('skipped', 0)} | 总计 {d.get('total')}")
     return None
 
 
@@ -254,6 +260,8 @@ class RichConsole(_BaseTextConsole):
             style = "bold red"
         elif ev.type in ("connect.fail", "attack.tool.error"):
             style = "red"
+        elif ev.type == "finding.suspected":
+            style = "magenta"
         elif ev.type in ("launchpad.fail", "launchpad.warn", "finding.unreached", "finding.skipped"):
             style = "yellow"
         elif ev.type == "gateway.error":
@@ -285,8 +293,8 @@ class RichConsole(_BaseTextConsole):
         if self.cur_activity and not done:
             header.add_row("正在", f"{self.cur_activity}")
         header.add_row("结果", f"● 确认 {self.counts['confirmed']}   "
-                               f"疑似无 {self.counts['clean']}   未触达 {self.counts['unreached']}   "
-                               f"未测成 {self.counts['skipped']}")
+                               f"疑似有 {self.counts['suspected']}   疑似无 {self.counts['clean']}   "
+                               f"未触达 {self.counts['unreached']}   未测成 {self.counts['skipped']}")
         elapsed = int(time.time() - self._t0)
         header.add_row("用时", f"{elapsed // 60}:{elapsed % 60:02d}" if elapsed >= 60 else f"{elapsed}s")
 
@@ -309,6 +317,7 @@ class RichConsole(_BaseTextConsole):
         table.add_column("状态")
         table.add_column("数量", justify="right")
         table.add_row("[bold red]确认漏洞[/bold red]", str(self.counts["confirmed"]))
+        table.add_row("[magenta]疑似有[/magenta]", str(self.counts["suspected"]))
         table.add_row("疑似无漏洞", str(self.counts["clean"]))
         table.add_row("未触达", str(self.counts["unreached"]))
         table.add_row("未测成", str(self.counts["skipped"]))

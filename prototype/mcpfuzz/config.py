@@ -27,6 +27,8 @@ class Settings:
     # 大模型
     llm_sink: bool = True
     llm_plan: bool = True
+    sequence_agent: bool = True    # 序列构建智能体（闭环实跑产配方）；关闭则回退一次性规划
+    agent_rounds: int = 4          # 智能体最大修复轮次
     llm_workers: int = 6
     use_cache: bool = True
     # 范围

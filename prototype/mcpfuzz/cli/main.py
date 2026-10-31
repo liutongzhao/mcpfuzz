@@ -43,6 +43,10 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
     g_llm = p.add_argument_group("大模型")
     g_llm.add_argument("--no-llm-sink", dest="llm_sink", action="store_false", default=None,
                        help="sink 推断只用规则（关大模型）")
+    g_llm.add_argument("--no-agent", dest="sequence_agent", action="store_false", default=None,
+                       help="关闭序列构建智能体，回退一次性规划")
+    g_llm.add_argument("--agent-rounds", dest="agent_rounds", type=int, default=None, metavar="N",
+                       help="序列构建智能体最大修复轮次（默认 4）")
     g_llm.add_argument("--no-llm-plan", dest="llm_plan", action="store_false", default=None,
                        help="编排只用兜底计划（长度 1，schema 填值，关大模型）")
     g_llm.add_argument("--llm-workers", type=int, default=None, metavar="N",
@@ -215,9 +219,11 @@ def cmd_scan(args) -> int:
         console.start(label)
         try:
             run_dir, findings = _run_one(target_arg, name, settings, console, extra_headers)
-            from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED
+            from mcpfuzz.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED,
+                                              UNREACHED)
             results.append({"target": label, "run_dir": str(run_dir),
                            "confirmed": sum(f.status == CONFIRMED for f in findings),
+                           "suspected": sum(f.status == SUSPECTED for f in findings),
                            "clean": sum(f.status == LIKELY_CLEAN for f in findings),
                            "unreached": sum(f.status == UNREACHED for f in findings),
                            "skipped": sum(f.status == SKIPPED for f in findings)})

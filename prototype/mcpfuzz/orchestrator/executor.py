@@ -1,12 +1,26 @@
-"""执行器：在一个持久会话上，按计划建立"发射台"，再对每个 sink 参数循环发载荷并三态判定。"""
+"""判定引擎：在一个持久会话上建"发射台"，取基线，再对每个参数发全套探针并五态判定。
+
+见 docs/判定引擎模块设计.md、docs/判定方法论.md。
+- 探针调度器：按 rank 发全套探针，CONFIRMED 后对该参数早停。
+- 多通道观测：inband（回显/签名，直接取证）/ oob（带外回连，批量 poll）/ timing（时延差，复测）/
+  differential（与基线响应差分）/ 错误指纹（被动弱证据）。
+- 触达判定：基线调用 + 任一非报错调用 → reached，用于区分"疑似无"与"未触达"。
+- 证据分级 → 五态：铁证/可证→确认有；仅弱证→疑似有；触达无命中→疑似无；未触达；未测成。
+"""
 from __future__ import annotations
 
 import asyncio
+import re
+import time
 
 from mcpfuzz.driver import call_on
+from mcpfuzz.sink.types import AI, SSRF
 
 from .extract import extract_value
-from .types import CONFIRMED, LIKELY_CLEAN, SKIPPED, UNREACHED, Finding
+from .types import CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
+
+# 参数注入 --version/--help 差分的特征标记（版本号 / usage / 选项报错）
+_AI_MARKERS = re.compile(r"(?i)(usage:|options:|\bv?\d+\.\d+(?:\.\d+)?\b|unknown option|unrecognized option|invalid option)")
 
 
 class _NullReporter:
@@ -34,10 +48,7 @@ async def _resolve_args(arg_specs: dict, step_responses: dict) -> tuple[dict, li
 
 async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=(3, 2.0),
                    reporter=None, settings=None) -> list:
-    """plan.steps[-1] 为目标工具。sink_params: 该工具待测的 ParamSink 列表。返回 Finding 列表。
-
-    reporter: cli.events.Reporter，不传则静默。settings: config.Settings（max_payloads/delay）。
-    """
+    """plan.steps[-1] 为目标工具。sink_params: 该工具待测的 ParamSinkPrior 列表。返回 Finding 列表。"""
     reporter = reporter or _NullReporter()
     target = plan.steps[-1].tool
     seq_trace = []   # 可复现：前置调用记录
@@ -45,11 +56,7 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
     if not plan.reachable:
         return _skipped_all(target, sink_params, plan.note or "计划判定目标不可达", reporter)
 
-    # 1) 建立发射台：尽力执行前置步骤。某一步取值失败或调用报错时，不再整体放弃——
-    #    前置步骤多是"保证仓库/资源存在"这类铺垫，一步失败不代表目标工具不可注入。
-    #    （实测：planner 选 git_set_working_dir 作前置、该步报错，曾把一个本已确认的
-    #     参数注入误判为"未触达"。）只有当目标工具的实参确实依赖失败步骤的产出、
-    #    无法取值时，才在下一步判为 SKIPPED。
+    # 1) 建立发射台：尽力执行前置步骤。一步失败不整体放弃——前置多是"保证资源存在"这类铺垫。
     step_responses = {}
     launchpad_errors = []
     for st in plan.steps[:-1]:
@@ -57,14 +64,11 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
         if missing:
             launchpad_errors.append(f"步骤{st.step}({st.tool})参数{missing}未能取值")
             reporter.emit("launchpad.step", level="debug", tool=st.tool, step=st.step,
-                          skipped=True, missing=missing,
-                          reason="依赖的前置产出缺席，跳过此步")
-            continue   # 跳过此步，其产出缺席；若目标依赖它，会在取值阶段暴露
+                          skipped=True, missing=missing, reason="依赖的前置产出缺席，跳过此步")
+            continue
         res = await _safe_call(session, st.tool, args)
         step_responses[st.step] = res["text"]
         seq_trace.append({"tool": st.tool, "args": args, "is_error": res["is_error"]})
-        # 前置步骤逐步落盘：真正发出的嵌套实参 + 是否报错 + 响应/错误正文。
-        # debug 级：默认不进终端，仅 -vv 显示；run.log / events.jsonl 始终全量记录。
         reporter.emit("launchpad.step", level="debug", tool=st.tool, step=st.step,
                       args=res.get("args_sent", args), is_error=res["is_error"],
                       response=res.get("text", ""), error=res.get("exc"))
@@ -73,30 +77,33 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
     if launchpad_errors:
         reporter.emit("launchpad.warn", tool=target, reason="；".join(launchpad_errors))
 
-    # 2) 目标工具的"发射台"实参（最后一步）：只有真的取不到值才判 SKIPPED
+    # 2) 目标工具的发射台实参（最后一步）：只有真的取不到值才判 SKIPPED
     base_args, missing = await _resolve_args(plan.steps[-1].args, step_responses)
     if missing:
         extra = f"（前置: {'；'.join(launchpad_errors)}）" if launchpad_errors else ""
         note = f"目标工具参数 {missing} 未能取值{extra}"
         reporter.emit("launchpad.fail", tool=target, reason=note)
         return _skipped_all(target, sink_params, note, reporter)
-    reporter.emit("launchpad.ready", level="debug", tool=target, base_args=base_args)
 
-    # 3) 对每个 sink 参数：循环发载荷 + 三态判定 + 早停
+    # 3) 基线：用全良性实参调一次目标工具，取响应/时延/是否可达（供差分、时延、触达判定复用）
+    base_res, base_latency = await _timed_call(session, target, base_args)
+    baseline_text = base_res["text"] or ""
+    baseline_ok = not base_res["is_error"]
+    reporter.emit("launchpad.ready", level="debug", tool=target, base_args=base_args,
+                  baseline_ok=baseline_ok, baseline_latency=round(base_latency, 3))
+
+    # 4) 对每个参数：发全套探针 + 多通道判定 + 五态
     findings = []
     for i, ps in enumerate(sink_params):
         try:
             f = await _attack_param(session, target, base_args, ps, synthesizer, oracle,
-                                    seq_trace, poll_window, reporter, settings)
+                                    seq_trace, poll_window, reporter, settings,
+                                    baseline_text, base_latency, baseline_ok)
         except (Exception, asyncio.CancelledError) as e:
-            # 远程网络抖动时，MCP SDK 内部任务组偶发用 CancelledError 打断正在进行的调用
-            # （不是 KeyboardInterrupt/真实取消）。这条会话大概率已不可信：把这个参数和该工具
-            # 剩余未测参数都标 unreached 并记录原因，不再用它发更多请求；之前已测完的参数的
-            # 真实结论保留，不因这一次连接异常被整体清零（这是修之前版本的一个静默吞错 bug）。
             note = f"连接异常中止（可能是网络抖动打断了正在进行的调用）：{str(e)[:150]}"
             reporter.emit("attack.tool.error", tool=target, error=note)
             for ps2 in sink_params[i:]:
-                f2 = Finding(target, ps2.param_path, _sink_of(ps2), SKIPPED, note=note)
+                f2 = Finding(target, ps2.param_path, _repr_class(ps2), SKIPPED, note=note)
                 findings.append(f2)
                 _emit_finding(reporter, f2)
             break
@@ -106,7 +113,7 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
 
 
 def _skipped_all(target, sink_params, note, reporter) -> list:
-    out = [Finding(target, ps.param_path, _sink_of(ps), SKIPPED, note=note) for ps in sink_params]
+    out = [Finding(target, ps.param_path, _repr_class(ps), SKIPPED, note=note) for ps in sink_params]
     for f in out:
         reporter.emit("finding.skipped", tool=f.tool, param=f.param, sink=f.sink, note=f.note)
     return out
@@ -116,6 +123,9 @@ def _emit_finding(reporter, f) -> None:
     if f.status == CONFIRMED:
         reporter.emit("finding.confirmed", tool=f.tool, param=f.param, sink=f.sink, channel=f.channel,
                       payload=f.payload, evidence=f.evidence)
+    elif f.status == SUSPECTED:
+        reporter.emit("finding.suspected", tool=f.tool, param=f.param, sink=f.sink, channel=f.channel,
+                      payload=f.payload, evidence=f.evidence, note=f.note)
     elif f.status == LIKELY_CLEAN:
         reporter.emit("finding.clean", tool=f.tool, param=f.param, sink=f.sink, note=f.note)
     elif f.status == UNREACHED:
@@ -124,83 +134,139 @@ def _emit_finding(reporter, f) -> None:
         reporter.emit("finding.skipped", tool=f.tool, param=f.param, sink=f.sink, note=f.note)
 
 
-async def _attack_param(session, target, base_args, param_sink, synthesizer, oracle, seq_trace,
-                        poll_window, reporter, settings):
-    payloads = synthesizer.synthesize(param_sink)
-    sink = _sink_of(param_sink)
-    param = param_sink.param_path
+async def _attack_param(session, target, base_args, prior, synthesizer, oracle, seq_trace,
+                        poll_window, reporter, settings, baseline_text, baseline_latency, baseline_ok):
+    probes = synthesizer.synthesize(prior)
+    repr_cls = _repr_class(prior)
+    param = prior.param_path
     max_payloads = getattr(settings, "max_payloads", None) if settings else None
     if max_payloads:
-        payloads = payloads[:max_payloads]
-    if not payloads:
-        return Finding(target, param, sink, LIKELY_CLEAN, note="无该 sink 的载荷")
+        probes = probes[:max_payloads]
+    if not probes:
+        return Finding(target, param, repr_cls, LIKELY_CLEAN, note="无可用载荷（参数惰性/无启用类别）")
 
-    reporter.emit("attack.param.start", tool=target, param=param, sink=sink, payload_count=len(payloads))
+    reporter.emit("attack.param.start", tool=target, param=param, sink=repr_cls, payload_count=len(probes))
     delay = getattr(settings, "delay", 0.0) if settings else 0.0
 
-    oob_pending = []    # [(payload, probe)]
-    saw_ok = saw_err = False
-    last_err = ""       # 代表性错误正文：供"未触达"结论附带原因，不再是一句笼统的话
-    for p in payloads:
+    oob_pending = []      # [(probe_spec, args)]
+    weak = []             # [(vuln_class, probe_spec, evidence)] 弱证据 → 疑似有
+    saw_ok = False
+    last_err = ""
+    for p in probes:
         args = {**base_args, param: p.value}
-        res = await _safe_call(session, target, args)
-        # 每条载荷全量落盘：真正发出的嵌套实参 + 是否报错 + 响应/错误正文 + sink 族类。
-        # debug 级：终端默认不显示（-vv 才显示且只显示精简行），文件 sink 始终记全。
+        res, latency = await _timed_call(session, target, args)
+        text = res["text"] or ""
         reporter.emit("payload.sent", level="debug", tool=target, param=param, channel=p.channel,
-                      payload=p.value, sink=p.sink, is_error=res["is_error"],
-                      args=res.get("args_sent", args),
-                      response=res.get("text", ""), error=res.get("exc"))
+                      payload=p.value, sink=p.vuln_class, is_error=res["is_error"],
+                      latency=round(latency, 3), args=res.get("args_sent", args),
+                      response=text, error=res.get("exc"))
         if res["is_error"]:
-            saw_err = True
-            err_text = res.get("exc") or res.get("text") or ""
+            err_text = res.get("exc") or text or ""
             if err_text:
                 last_err = err_text
         else:
             saw_ok = True
-        if p.channel == "reflection":
-            hit = oracle.observe_response(p.probe, res["text"])
+
+        # 被动：错误指纹（弱证据），对响应与报错正文都看
+        fp = oracle.fingerprint(text, p.vuln_class)
+        if fp:
+            weak.append((p.vuln_class, p, {"type": "error_fingerprint", "channel": "inband",
+                                           "snippet": fp}))
+
+        if p.channel == "inband":
+            hit = oracle.observe_inband(p.probe, text)
             if hit:
-                # 确认时用命中载荷“自身”的 sink 族类，而非该参数的首要 sink 标签——
-                # 否则一条命令注入载荷打中、却被报成参数首标的 path_traversal（类型标错）。
-                return _confirmed(target, param, p.sink, p, hit, seq_trace, args)
-        else:  # oob：先全部发出，稍后一次性 poll
-            oob_pending.append(p)
+                return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
+        elif p.channel == "timing":
+            if baseline_latency is not None and (latency - baseline_latency) >= p.delay_target * 0.6:
+                if await _confirm_timing(session, target, args, p, baseline_latency):
+                    ev = {"type": "timing", "baseline": round(baseline_latency, 3),
+                          "observed": round(latency, 3), "target": p.delay_target}
+                    return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "timing")
+        elif p.channel == "differential":
+            ev = _diff_hit(p.vuln_class, baseline_text, text)
+            if ev:
+                return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "differential")
+        elif p.channel == "oob":
+            oob_pending.append((p, args))
         if delay:
             await asyncio.sleep(delay)
 
+    # 批量 poll 带外回连
     if oob_pending:
-        hits = oracle.poll([p.probe for p in oob_pending], rounds=poll_window[0], interval=poll_window[1])
-        for p in oob_pending:                 # 按 rank 顺序取最早命中
+        hits = oracle.poll([p.probe for p, _ in oob_pending], rounds=poll_window[0], interval=poll_window[1])
+        for p, args in oob_pending:
             hit = hits.get(p.probe.token)
-            if hit:
-                args = {**base_args, param: p.value}
-                return _confirmed(target, param, p.sink, p, hit, seq_trace, args)
+            if not hit:
+                continue
+            if p.vuln_class == SSRF:
+                # 信任边界：抓取 URL 本就是功能，回连命中但未越信任边界 → 仅"疑似有"
+                weak.append((SSRF, p, {"type": "oob_ssrf", "channel": "oob",
+                                       "note": "服务端回连命中，但未证明越过信任边界（内网/元数据），疑似 SSRF",
+                                       **(hit.evidence or {})}))
+            else:
+                return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob")
 
-    status = LIKELY_CLEAN if saw_ok else UNREACHED
-    if saw_ok:
-        note = ""
-    else:
-        note = "所有载荷调用均报错，可能未触达 sink"
-        if last_err:
-            # 摘要只带精简错误（终端/报告够用即可）；完整响应/错误正文已随
-            # payload.sent 全量落到 run.log / events.jsonl，排查看文件。
-            note += f"；样例错误：{str(last_err)[:120]}"
-    return Finding(target, param, sink, status, note=note)
+    # 仅弱证据 → 疑似有
+    if weak:
+        cls, p, ev = weak[0]
+        args = {**base_args, param: p.value}
+        return Finding(target, param, cls, SUSPECTED, payload=p.value, channel=ev.get("channel", p.channel),
+                       evidence=ev,
+                       sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],
+                       note="仅弱证据（错误指纹 / 回连未越边界），需人工复核")
+
+    # 无任何命中：区分"疑似无"（触达了）与"未触达"
+    if saw_ok or baseline_ok:
+        return Finding(target, param, repr_cls, LIKELY_CLEAN, note="")
+    note = "所有载荷调用均报错且基线不可达，可能未触达 sink"
+    if last_err:
+        note += f"；样例错误：{str(last_err)[:120]}"
+    return Finding(target, param, repr_cls, UNREACHED, note=note)
 
 
-def _confirmed(target, param, sink, payload, hit, seq_trace, final_args):
-    return Finding(target, param, sink, CONFIRMED, payload=payload.value, channel=payload.channel,
-                   evidence=hit.evidence,
+async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
+    """复测去抖：再跑 rounds 次，取中位的额外时延，仍 >= 目标*0.6 才算确认。"""
+    adds = []
+    for _ in range(rounds):
+        res, lat = await _timed_call(session, target, args)
+        adds.append(lat - baseline)
+    adds.sort()
+    return adds[len(adds) // 2] >= p.delay_target * 0.6
+
+
+def _diff_hit(vuln_class, baseline_text, text):
+    """差分：参数注入的 --version/--help 若让响应出现版本/用法/选项报错特征（基线没有）→ 命中。"""
+    if vuln_class != AI or not text or text == baseline_text:
+        return None
+    m = _AI_MARKERS.search(text)
+    if m and (not baseline_text or m.group(0).lower() not in baseline_text.lower()):
+        i = m.start()
+        return {"type": "differential", "marker": m.group(0),
+                "snippet": text[max(0, i - 20): i + 60]}
+    return None
+
+
+def _confirmed(target, param, cls, p, evidence, seq_trace, final_args, channel):
+    return Finding(target, param, cls, CONFIRMED, payload=p.value, channel=channel,
+                   evidence=evidence,
                    sequence=seq_trace + [{"tool": target, "args": final_args, "payload_param": param}])
 
 
-def _sink_of(param_sink):
-    return param_sink.sinks[0].type if param_sink.sinks else "unknown"
+def _repr_class(prior):
+    """代表类别：权重最高的启用类别（供 SKIPPED/UNREACHED 等无命中结论标注）。"""
+    cls = prior.ranked_classes()
+    return cls[0] if cls else "unknown"
+
+
+async def _timed_call(session, tool, args):
+    t0 = time.monotonic()
+    res = await _safe_call(session, tool, args)
+    return res, time.monotonic() - t0
 
 
 async def _safe_call(session, tool, args) -> dict:
     try:
         return await call_on(session, tool, args)
     except Exception as e:
-        # 调用抛异常（网络/协议/序列化等），此时未能发到线上：args_sent 回落为原始实参。
         return {"text": "", "is_error": True, "raw": None, "exc": repr(e), "args_sent": args}
