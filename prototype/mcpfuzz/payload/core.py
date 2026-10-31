@@ -53,13 +53,21 @@ class PayloadSynthesizer:
         meta = {"tool": tool, "param": param, "sink": cls, "technique": tpl.get("technique", "")}
         if channel in ("oob", "inband", "cross_tool"):
             # cross_tool 也需要一个唯一 token（写入 canary 文件再由读工具读回），按 inband 铸造
-            probe = self.oracle.new_probe("oob" if channel == "oob" else "inband",
-                                          meta=meta, expect=expect)
-            # inband/cross_tool 的 embed 即 token；oob 的 embed 即完整回连 URL
-            value = value.replace("{CALLBACK}", probe.embed).replace("{TOKEN}", probe.embed)
+            probe = self.oracle.new_probe("oob" if channel == "oob" else "inband", meta=meta, expect=None)
+            # inband/cross_tool 的 embed 即 token；oob 的 embed 即完整回连 URL。
+            # {TOKEN} → token（即 inband 的 embed）；{CALLBACK} → oob 的完整回连 URL。
+            value = value.replace("{CALLBACK}", probe.embed).replace("{TOKEN}", probe.token)
+            # 期望签名也做占位符替换：求值型回显用 "{TOKEN}1681" 这种"执行后才出现"的形态，
+            # 可区分"真执行"与"输入被原样回显"（后者只会出现 {TOKEN}$((41*41))）。
+            if expect:
+                expect = [str(e).replace("{TOKEN}", probe.token).replace("{CALLBACK}", probe.embed)
+                          for e in expect]
+            else:
+                expect = [probe.token]
+            probe.expect = expect
             probe.meta["payload"] = value
         return ProbeSpec(
             tool=tool, param_path=param, vuln_class=cls, value=value, channel=channel,
-            control=tpl.get("control"), probe=probe,
-            expect=(expect or (probe.expect if probe else [])),
-            delay_target=tpl.get("delay_target", 0.0), technique=tpl.get("technique", ""))
+            control=tpl.get("control"), probe=probe, expect=(expect or []),
+            delay_target=tpl.get("delay_target", 0.0), technique=tpl.get("technique", ""),
+            reflection_safe=tpl.get("reflection_safe", True))

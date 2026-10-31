@@ -20,3 +20,5 @@ class ProbeSpec:
     delay_target: float = 0.0   # timing：期望额外延时（秒）
     technique: str = ""      # 便于报告，如 'ci:;echo' / 'pt:../etc/passwd'
     rank: int = 0            # 越小越先发，支持早停
+    reflection_safe: bool = True   # inband 命中是否"反射免疫"：期望签名不可能由输入被原样回显产生。
+    #   False（如 AI 未知选项，token 就在输入里）→ 命中须有对应错误指纹佐证才算确认，否则仅弱证据。

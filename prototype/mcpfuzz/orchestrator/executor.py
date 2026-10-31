@@ -203,7 +203,12 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
         if p.channel == "inband":
             hit = oracle.observe_inband(p.probe, text)
             if hit:
-                return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
+                # 反射免疫的探针（求值回显/文件签名/元数据签名，签名不会由输入原样回显产生）→ 直接确认；
+                # 非反射免疫（AI 未知选项，token 就在输入里）→ 须有对应错误指纹佐证，否则疑似仅输入回显。
+                if getattr(p, "reflection_safe", True) or oracle.fingerprint(text, p.vuln_class):
+                    return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
+                weak.append((p.vuln_class, p, {"type": "reflected_token", "channel": "inband",
+                             "note": "token 回显但无对应错误指纹佐证，疑似仅输入被原样回显，非执行/解析"}))
         elif p.channel == "timing":
             if baseline_latency is not None and (latency - baseline_latency) >= p.delay_target * 0.6:
                 if await _confirm_timing(session, target, args, p, baseline_latency):
