@@ -36,7 +36,7 @@ async def _with_session(url: str, headers: dict | None, fn, timeout: float | Non
     captured: dict = {}
     try:
         async with streamable_http_client(url, http_client=http_client,
-                                          terminate_on_close=False) as (read, write):
+                                          terminate_on_close=False) as (read, write, *_):
             async with ClientSession(read, write) as session:
                 init = await session.initialize()
                 captured["result"] = await fn(session, init)
@@ -136,7 +136,7 @@ async def open_session(url: str, headers: dict | None = None, timeout: float | N
     yielded = False
     try:
         async with streamable_http_client(url, http_client=http_client,
-                                          terminate_on_close=False) as (read, write):
+                                          terminate_on_close=False) as (read, write, *_):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yielded = True
