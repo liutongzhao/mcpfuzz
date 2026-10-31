@@ -111,7 +111,10 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     # Orchestrator 内部会在 cache_dir 下建 .plan_cache/ 子目录；传 run_dir 本身即可
     orch = Orchestrator(url, headers, catalog, oracle, cache_dir=run_dir if settings.use_cache else None,
                         reporter=reporter, settings=settings)
-    findings = orch.run(param_sinks, only_tools=only_tools, dry_run=settings.dry_run)
+    try:
+        findings = orch.run(param_sinks, only_tools=only_tools, dry_run=settings.dry_run)
+    finally:
+        orch.close()   # 释放智能体常驻事件循环
 
     confirmed = sum(f.status == CONFIRMED for f in findings)
     suspected = sum(f.status == SUSPECTED for f in findings)

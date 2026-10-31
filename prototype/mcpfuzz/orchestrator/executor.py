@@ -19,8 +19,27 @@ from mcpfuzz.sink.types import AI, SSRF
 from .extract import extract_value
 from .types import CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
 
-# 参数注入 --version/--help 差分的特征标记（版本号 / usage / 选项报错）
-_AI_MARKERS = re.compile(r"(?i)(usage:|options:|\bv?\d+\.\d+(?:\.\d+)?\b|unknown option|unrecognized option|invalid option)")
+# 参数注入 --version/--help 差分的特征标记（版本号 / usage / getopt 风格的选项报错）。
+# 不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误报。
+_AI_MARKERS = re.compile(r"(?i)(usage:|\bv?\d+\.\d+(?:\.\d+)?\b|unknown option|unrecognized option)")
+
+# 程序/工具自身执行后产生的报错（载荷已抵达 sink，只是被程序当非法参数拒了）→ 视为"已触达"。
+_PROGRAM_ERR = re.compile(r"(?i)(fatal:|exit code|stderr:|bad revision|invalid object|"
+                          r"not something we can merge|does not have any commits|not a git repository|"
+                          r"traversal detected|working directory does not exist|already exists)")
+# 发到后端程序之前就被输入/schema 校验挡下 → 未触达 sink。
+_VALIDATION_ERR = re.compile(r"(?i)(input validation error|invalid arguments for tool|"
+                             r"expected (?:number|array|object|string|boolean|one of)|"
+                             r"no session working directory|invalid input|invalid enum)")
+
+
+def _is_program_error(text: str) -> bool:
+    """报错是否出自"程序已执行"（已触达 sink）而非"输入/schema 校验"（未触达）。"""
+    if not text:
+        return False
+    if _VALIDATION_ERR.search(text):
+        return False   # schema/输入校验优先：还没到后端程序
+    return bool(_PROGRAM_ERR.search(text))
 
 
 class _NullReporter:
@@ -178,6 +197,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     oob_pending = []      # [(probe_spec, args)]
     weak = []             # [(vuln_class, probe_spec, evidence)] 弱证据 → 疑似有
     saw_ok = False
+    saw_program_error = False   # 载荷抵达后端程序、被当非法参数拒（已触达，用于区分"疑似无 vs 未触达"）
     last_err = ""
     for p in probes:
         args = _shaped_args(base_args, prior, p.value)
@@ -191,6 +211,8 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             err_text = res.get("exc") or text or ""
             if err_text:
                 last_err = err_text
+            if _is_program_error(err_text):
+                saw_program_error = True
         else:
             saw_ok = True
 
@@ -203,12 +225,16 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
         if p.channel == "inband":
             hit = oracle.observe_inband(p.probe, text)
             if hit:
-                # 反射免疫的探针（求值回显/文件签名/元数据签名，签名不会由输入原样回显产生）→ 直接确认；
-                # 非反射免疫（AI 未知选项，token 就在输入里）→ 须有对应错误指纹佐证，否则疑似仅输入回显。
-                if getattr(p, "reflection_safe", True) or oracle.fingerprint(text, p.vuln_class):
+                # 通用反射感知：命中的签名若本就是载荷子串 → 疑似"输入被原样回显"，非执行/解析。
+                # 签名不在载荷里（求值回显 token1681 / 文件特征 root:x:0:0 / 元数据 ami-id）→ 铁证确认；
+                # 在载荷里（AI 未知选项、SSRF 把元数据路径词回显）→ 须有对应错误指纹佐证才确认，
+                # 否则不算证据（纯回显几乎每个工具都有，计入可达、趋向"疑似无"，不再堆"疑似有"）。
+                marker = (hit.evidence or {}).get("marker", "")
+                reflected = bool(marker) and marker in p.value
+                if not reflected:
                     return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
-                weak.append((p.vuln_class, p, {"type": "reflected_token", "channel": "inband",
-                             "note": "token 回显但无对应错误指纹佐证，疑似仅输入被原样回显，非执行/解析"}))
+                if oracle.fingerprint(text, p.vuln_class):
+                    return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
         elif p.channel == "timing":
             if baseline_latency is not None and (latency - baseline_latency) >= p.delay_target * 0.6:
                 if await _confirm_timing(session, target, args, p, baseline_latency):
@@ -260,10 +286,11 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                        sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],
                        note="仅弱证据（错误指纹 / 回连未越边界），需人工复核")
 
-    # 无任何命中：区分"疑似无"（触达了）与"未触达"
-    if saw_ok or baseline_ok:
+    # 无任何命中：区分"疑似无"（已触达 sink）与"未触达"。
+    # 已触达 = 有正常返回 / 基线可达 / 或载荷已抵达后端程序被其当非法参数拒（程序级报错）。
+    if saw_ok or baseline_ok or saw_program_error:
         return Finding(target, param, repr_cls, LIKELY_CLEAN, note="")
-    note = "所有载荷调用均报错且基线不可达，可能未触达 sink"
+    note = "所有载荷均被输入/schema 校验挡下且基线不可达，可能未触达 sink"
     if last_err:
         note += f"；样例错误：{str(last_err)[:120]}"
     return Finding(target, param, repr_cls, UNREACHED, note=note)
@@ -280,9 +307,11 @@ async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
 
 
 def _diff_hit(vuln_class, baseline_text, text):
-    """差分：参数注入的 --version/--help 若让响应出现版本/用法/选项报错特征（基线没有）→ 命中。"""
+    """差分：参数注入的 --version/--help 若让响应出现版本/用法/getopt 报错特征（基线没有）→ 命中。"""
     if vuln_class != AI or not text or text == baseline_text:
         return None
+    if _VALIDATION_ERR.search(text):
+        return None   # 应用层输入/枚举校验（非 argv 注入），不算
     m = _AI_MARKERS.search(text)
     if m and (not baseline_text or m.group(0).lower() not in baseline_text.lower()):
         i = m.start()

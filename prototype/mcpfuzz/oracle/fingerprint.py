@@ -11,18 +11,17 @@ from mcpfuzz.sink.types import AI, CI, PT, SSRF
 _PATTERNS = {
     CI: [
         r"/bin/(?:sh|bash)\b",
-        r"\b(?:command not found|not found)\b",
-        r"\bsyntax error\b",
+        r"\bcommand not found\b",          # 不用裸 "not found"：会撞 "File not found"（文件不存在，非 shell）
+        r"\bsyntax error near\b",
         r"\bunexpected (?:token|EOF|end of)\b",
-        r"\bsh:\s",
+        r"^sh:\s",
     ],
     AI: [
         r"\bunknown option\b",
         r"\bunrecognized option\b",
-        r"\binvalid option\b",
-        r"\bunknown (?:flag|argument|switch)\b",
+        r"\bunknown (?:flag|switch)\b",
         r"\bunexpected argument\b",
-        r"^usage:",
+        # 不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误判
     ],
     PT: [
         r"\bENOENT\b",

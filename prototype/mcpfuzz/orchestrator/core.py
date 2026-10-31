@@ -37,6 +37,7 @@ class Orchestrator:
         self._reader = _find_reader(catalog)   # cross_tool canary 读回器（可能为 None）
         self.reporter = reporter or _NullReporter()
         self.settings = settings
+        self._agent_loop = None   # 智能体探索全程共用的常驻事件循环（见 _agent_run）
 
     def run(self, param_sinks, only_tools=None, dry_run: bool = False) -> list:
         """param_sinks: sink.ParamSinkPrior 列表。only_tools: 限定工具名集合(调试用)。
@@ -84,13 +85,36 @@ class Orchestrator:
         """序列构建：优先 LangGraph 智能体（自建连接实跑产配方）；异常/未启用回退一次性规划 / schema 兜底。"""
         if use_agent:
             try:
-                return asyncio.run(agent.build_sequence(self.url, self.headers, tool, self.catalog,
-                                                        self.settings, self.reporter, cache_dir=agent_cache))
+                return self._agent_run(agent.build_sequence(
+                    self.url, self.headers, tool, self.catalog, self.settings,
+                    self.reporter, cache_dir=agent_cache))
             except Exception as e:
                 self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
         if self.settings and self.settings.llm_plan:
             return planner.plan(tool, self.catalog, cache_dir=plan_cache)
         return planner.fallback_plan(tool)
+
+    def _agent_run(self, coro):
+        """在**常驻**事件循环上跑智能体协程。
+
+        不能用 asyncio.run（每工具新建/关闭一个循环）：LangGraph 用的 LLM 异步客户端
+        (ChatOpenAI/httpx) 会把底层连接缓存在首个事件循环上，下一个工具换新循环时缓存的
+        客户端仍绑在已关闭的旧循环上 → "Event loop is closed"，导致一半工具探索崩溃、回退到
+        schema 兜底计划（前置没搭、全未触达）。共用一个循环即可根治。
+        """
+        if self._agent_loop is None or self._agent_loop.is_closed():
+            self._agent_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._agent_loop)
+        try:
+            return self._agent_loop.run_until_complete(coro)
+        finally:
+            asyncio.set_event_loop(None)   # 交回干净状态，后续攻击阶段的 asyncio.run 不受影响
+
+    def close(self):
+        """释放常驻事件循环（扫描结束时调用）。"""
+        if self._agent_loop is not None and not self._agent_loop.is_closed():
+            self._agent_loop.close()
+        self._agent_loop = None
 
     def _attack_tool(self, tool, plan, sink_params, timeout, poll_window, retries) -> list:
         """回放给定计划并对每个参数多通道判定。每次尝试独立事件循环，隔离上一工具可能残留的

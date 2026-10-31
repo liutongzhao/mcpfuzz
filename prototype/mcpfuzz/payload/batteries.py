@@ -106,9 +106,10 @@ def _pt_battery() -> list[dict]:
 
 
 # ---------------- SSRF ----------------
-# 云元数据特征（命中即越过信任边界 → 强证据）。ami-id/instance-id 等为 IMDS 专有，噪声低。
-_SSRF_META_SIGS = ["ami-id", "instance-id", "security-credentials", "AccessKeyId",
-                   "InstanceProfile", "public-keys", "owner-account-id", "iam/"]
+# 云元数据特征：必须是**只在响应体里出现、且不在我们发的 URL 路径里**的词，否则 URL 被原样
+# 回显就会误命中（如 security-credentials/iam/meta-data 都是 URL 路径词，已剔除）。
+_SSRF_META_SIGS = ["ami-id", "instance-id", "AccessKeyId", "SecretAccessKey",
+                   "InstanceProfile", "owner-account-id", "ssh-rsa"]
 
 
 def _ssrf_battery() -> list[dict]:
