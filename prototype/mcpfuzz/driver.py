@@ -16,15 +16,22 @@ from .catalog import Target, nest_arguments, normalize_tool
 def _make_http_client(headers: dict | None, timeout: float | None):
     if not headers and not timeout:
         return None
-    import httpx2   # mcp SDK 底层用的 httpx 替代包（这个环境里的网络层），不是标准 httpx
+    # 用 mcp SDK 自己用的那个 httpx 模块来构造 Timeout：不同 mcp 版本底层可能是 httpx 或
+    # httpx2，类型必须和 SDK 一致，否则 SDK 内部超时运算会报 "float + Timeout" 之类的类型错误
+    # （升级到 mcp 1.30 后，经网关连接即因此失败）。优先取 SDK 模块里的 httpx，兜底再自行导入。
+    from mcp.client import streamable_http as _sh
+    _httpx = getattr(_sh, "httpx", None)
+    if _httpx is None:
+        try:
+            import httpx as _httpx
+        except ImportError:  # 老环境用的是 httpx2 替代包
+            import httpx2 as _httpx
     t = None
     if timeout:
         # read 必须留足：streamable HTTP 的响应走 SSE，服务器会把流长时间开着等结果；
-        # 把 read 也压到跟 connect/write/pool 一样短，会在流还没吐数据时就被掐断
-        # （表现为 "Server disconnected without sending a response"）。connect/write/pool
-        # 仍用用户给的 timeout 快速失败，read 给个不低于 SDK 默认(300s)的下限。
-        t = httpx2.Timeout(timeout, read=max(timeout, 300.0))
-    return create_mcp_http_client(headers=headers, timeout=t)
+        # 把 read 也压到跟 connect/write/pool 一样短，会在流还没吐数据时就被掐断。
+        t = _httpx.Timeout(timeout, read=max(timeout, 300.0))
+    return create_mcp_http_client(headers=headers or None, timeout=t)
 
 
 async def _with_session(url: str, headers: dict | None, fn, timeout: float | None = None):
