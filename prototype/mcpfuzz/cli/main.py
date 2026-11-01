@@ -16,7 +16,7 @@ from pathlib import Path
 
 from mcpfuzz.config import Settings, build_settings
 from mcpfuzz.report import render_markdown
-from mcpfuzz.run import make_run_dir, read_batch_file, scan_target, write_batch_summary
+from mcpfuzz.run import make_run_dir, read_batch_file, scan_target, slugify, write_batch_summary
 from mcpfuzz.targetcfg import resolve_target
 
 from .console import build_console
@@ -106,6 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--name", default=None, help="配置文件里选用的 server 名（默认取第一个）")
     p_scan.add_argument("--all", action="store_true", help="配置文件里的所有 server 全测")
     p_scan.add_argument("--batch", default=None, metavar="FILE", help="批量清单文件（每行一个目标）")
+    p_scan.add_argument("--batch-name", default=None, metavar="NAME",
+                        help="批次名：所有结果归到 runs/<NAME>/ 下（默认平铺在 runs/）")
     p_scan.add_argument("--header", action="append", default=[], metavar="'K: V'",
                         help="追加 HTTP 头，如鉴权（可重复）")
     p_scan.add_argument("--fail-fast", action="store_true", help="批量时遇到失败立即中断（默认跳过继续）")
@@ -119,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_recon.add_argument("--name", default=None, help="配置文件里选用的 server 名（默认取第一个）")
     p_recon.add_argument("--all", action="store_true", help="配置文件里的所有 server 全测")
     p_recon.add_argument("--batch", default=None, metavar="FILE", help="批量清单文件（每行一个目标）")
+    p_recon.add_argument("--batch-name", default=None, metavar="NAME",
+                         help="批次名：所有结果归到 runs/<NAME>/ 下（默认平铺在 runs/）")
     p_recon.add_argument("--header", action="append", default=[], metavar="'K: V'")
     p_recon.add_argument("--fail-fast", action="store_true")
     _add_common_scan_args(p_recon)
@@ -210,6 +214,10 @@ def _run_one(target_arg, name, settings, console, extra_headers, dry_run_overrid
 
 def cmd_scan(args) -> int:
     settings = build_settings(args)
+    batch_name = getattr(args, "batch_name", None)
+    if batch_name:
+        # 批次名：所有结果（每目标子目录 + batch_summary + latest）统一归到 runs/<批次名>/ 下
+        settings.out_dir = str(Path(settings.out_dir) / slugify(batch_name))
     targets = _resolve_targets(args)
     extra_headers = _parse_headers(args.header)
     _confirm_or_exit(settings, len(targets))
