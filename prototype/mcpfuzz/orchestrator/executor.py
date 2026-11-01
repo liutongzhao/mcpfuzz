@@ -17,7 +17,7 @@ from mcpfuzz.driver import call_on
 from mcpfuzz.sink.types import AI, SSRF
 
 from .extract import extract_value
-from .types import CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
+from .types import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
 
 # 参数注入 --version/--help 差分的特征标记（版本号 / usage / getopt 风格的选项报错）。
 # 不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误报。
@@ -119,34 +119,54 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
         try:
             f = await _attack_param(session, target, base_args, ps, synthesizer, oracle,
                                     seq_trace, poll_window, reporter, settings,
-                                    baseline_text, base_latency, baseline_ok, read_back)
+                                    baseline_text, base_latency, read_back)
         except (Exception, asyncio.CancelledError) as e:
             note = f"连接异常中止（可能是网络抖动打断了正在进行的调用）：{str(e)[:150]}"
-            # 存活探测：区分"服务器被打挂(DoS)"与"网络抖动"
-            if liveness is not None and not await _is_alive(liveness):
-                note += "；事后存活探测失败，服务器可能已崩溃/无响应（疑似 DoS 信号）"
-                reporter.emit("server.crash", tool=target, note=note)
+            # 存活探测去抖：区分"服务器被打挂(DoS)"与"网络抖动/本地会话损坏"
+            crashed = False
+            if liveness is not None:
+                alive, detail = await _liveness_recheck(liveness)
+                if not alive:
+                    crashed = True
+                    note += f"；事后连续存活探测失败，服务器可能已崩溃/无响应（疑似 DoS）；最后原因：{detail}"
+                    reporter.emit("server.crash", tool=target, note=note)
             reporter.emit("attack.tool.error", tool=target, error=note)
             for ps2 in sink_params[i:]:
                 f2 = Finding(target, ps2.param_path, _repr_class(ps2), SKIPPED, note=note)
                 findings.append(f2)
                 _emit_finding(reporter, f2)
+            if crashed:   # 崩溃落成一条可用性发现，进 findings.json / 报告
+                findings.append(Finding(target, "(存活探测)", DOS, SUSPECTED, note=note))
             return findings
         findings.append(f)
         _emit_finding(reporter, f)
 
-    # 整套打完后一次存活探测（DoS 观测）：有载荷会把服务器打到无响应，即便单次调用只表现为报错
-    if liveness is not None and not await _is_alive(liveness):
-        reporter.emit("server.crash", tool=target,
-                      note="整套测试后存活探测失败，服务器可能已崩溃/无响应（疑似 DoS 信号）")
+    # 整套打完后存活探测（DoS 观测）：有载荷会把服务器打到无响应，即便单次调用只表现为报错。
+    # K 次复测去抖，真失败才判崩溃，并落成一条可用性发现进 findings（从而进 findings.json/报告）。
+    if liveness is not None:
+        alive, detail = await _liveness_recheck(liveness)
+        if not alive:
+            note = f"整套测试后连续存活探测失败，服务器可能已崩溃/无响应（疑似 DoS）；最后原因：{detail}"
+            reporter.emit("server.crash", tool=target, note=note)
+            findings.append(Finding(target, "(存活探测)", DOS, SUSPECTED, note=note))
     return findings
 
 
-async def _is_alive(liveness) -> bool:
-    try:
-        return bool(await liveness())
-    except Exception:
-        return False
+async def _liveness_recheck(liveness, rounds: int = 3, interval: float = 1.0):
+    """崩溃判定去抖（docs/判定方法论.md：崩溃需 K 次重复，抵消网络抖动）：连续 rounds 次
+    心跳都失败才判崩溃；任一次成功即判存活。返回 (alive, detail)，detail 为最后一次失败原因
+    （真实异常，不吞——真 DoS 与误报据此区分）。"""
+    detail = ""
+    for i in range(rounds):
+        try:
+            if await liveness():
+                return True, ""
+            detail = detail or "心跳返回否定"
+        except Exception as e:
+            detail = f"{type(e).__name__}: {str(e)[:150]}"
+        if i < rounds - 1:
+            await asyncio.sleep(interval)
+    return False, detail
 
 
 def _shaped_args(base_args, prior, value):
@@ -179,7 +199,7 @@ def _emit_finding(reporter, f) -> None:
 
 async def _attack_param(session, target, base_args, prior, synthesizer, oracle, seq_trace,
                         poll_window, reporter, settings, baseline_text, baseline_latency,
-                        baseline_ok, read_back=None):
+                        read_back=None):
     probes = synthesizer.synthesize(prior)
     repr_cls = _repr_class(prior)
     param = prior.param_path
@@ -284,11 +304,13 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                        sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],
                        note="仅弱证据（错误指纹 / 回连未越边界），需人工复核")
 
-    # 无任何命中：区分"疑似无"（已触达 sink）与"未触达"。
-    # 已触达 = 有正常返回 / 基线可达 / 或载荷已抵达后端程序被其当非法参数拒（程序级报错）。
-    if saw_ok or baseline_ok or saw_program_error:
+    # 无任何命中：区分"疑似无"（本参数确有探针触达 sink）与"未触达"。
+    # 触达只看本参数自己的探针——有正常返回(saw_ok)，或载荷抵达后端程序被其当非法参数拒
+    # （程序级报错 saw_program_error）。不拿工具级 baseline 顶替：否则强类型/枚举/pattern
+    # 参数的探针被 schema 全弹回时，会被 baseline 误翻成"疑似无漏洞"，掩盖"其实没测到"。
+    if saw_ok or saw_program_error:
         return Finding(target, param, repr_cls, LIKELY_CLEAN, note="")
-    note = "所有载荷均被输入/schema 校验挡下且基线不可达，可能未触达 sink"
+    note = "本参数所有探针均被输入/schema 校验挡下（强类型/枚举/pattern 约束），未触达 sink"
     if last_err:
         note += f"；样例错误：{str(last_err)[:120]}"
     return Finding(target, param, repr_cls, UNREACHED, note=note)

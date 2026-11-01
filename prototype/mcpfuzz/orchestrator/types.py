@@ -11,6 +11,11 @@ UNREACHED = "unreached"        # 载荷确实发出了，但全部被目标工�
 SKIPPED = "skipped"            # 工具侧原因根本没发出有效测试：计划不可达 / 前置步骤报错 / 会话异常 /
                                # 目标实参取值失败。这不等于"无漏洞"，统计时必须与 UNREACHED 分开。
 
+# 可用性/拒绝服务观测的 sink 标识。崩溃不是针对某个参数的判定，而是"整套打完后服务器被打到
+# 无响应"的整工具级发现（见 docs/漏洞类型与检测手段.md 第6类）。用独立 sink 值承载，便于在
+# 统计与报告里把它从 per-param 五态里单独拎出，不污染参数覆盖率。
+DOS = "denial_of_service"
+
 
 @dataclass
 class Step:

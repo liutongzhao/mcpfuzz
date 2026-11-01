@@ -157,15 +157,20 @@ async def open_session(url: str, headers: dict | None = None, timeout: float | N
             await http_client.aclose()
 
 
-async def ping(url: str, headers: dict | None = None, timeout: float | None = None) -> bool:
+async def ping(url: str, headers: dict | None = None, timeout: float | None = None,
+               raise_on_fail: bool = False) -> bool:
     """轻量存活探测：仅建立会话并 initialize，成功返回 True。
 
     用于区分"服务器被打挂/无响应"（结果，甚至是 DoS 信号）与"客户端自身会话异常"（bug）。
+    raise_on_fail=True 时，失败不返回 False 而是把真实异常抛出，供上层记录崩溃原因——
+    避免把"为什么探测失败"无声吞掉，导致真 DoS 与误报在日志里无法区分。
     """
     try:
         await _with_session(url, headers, lambda s, i: True, timeout)
         return True
     except Exception:
+        if raise_on_fail:
+            raise
         return False
 
 

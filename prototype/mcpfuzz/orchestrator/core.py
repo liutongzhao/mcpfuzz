@@ -171,7 +171,15 @@ class Orchestrator:
     async def _attack_once(self, tool, plan, sink_params, timeout, poll_window) -> list:
         async with open_session(self.url, self.headers, timeout=timeout) as session:
             async def liveness():
-                return await ping(self.url, self.headers, timeout)
+                # 存活心跳：优先复用当前会话(list_tools)，不新开并发会话。对 stdio 等无会话
+                # 隔离的后端，battery 会话还开着时并发第二个 initialize 会假失败，曾导致每个
+                # 工具都误报"崩溃"。仅当前会话不可用时才新开会话探服务器真实状态，真失败则
+                # 抛出(raise_on_fail)交由上层 recheck 记录原因，用以区分"服务器挂了"与"本地会话坏了"。
+                try:
+                    await session.list_tools()
+                    return True
+                except Exception:
+                    return await ping(self.url, self.headers, timeout, raise_on_fail=True)
 
             read_back = None
             if self._reader and self._reader[0] != tool.name:

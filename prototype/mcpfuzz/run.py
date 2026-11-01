@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcpfuzz.driver import fetch_catalog_sync
 from mcpfuzz.oracle import Oracle
-from mcpfuzz.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED,
+from mcpfuzz.orchestrator import (CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED,
                                    Orchestrator)
 from mcpfuzz.report import render_markdown
 from mcpfuzz.sink import SinkInferencer
@@ -116,12 +116,16 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     finally:
         orch.close()   # 释放智能体常驻事件循环
 
-    confirmed = sum(f.status == CONFIRMED for f in findings)
-    suspected = sum(f.status == SUSPECTED for f in findings)
-    clean = sum(f.status == LIKELY_CLEAN for f in findings)
-    unreached = sum(f.status == UNREACHED for f in findings)
-    skipped = sum(f.status == SKIPPED for f in findings)
+    # 可用性/DoS 发现是整工具级观测，不计入 per-param 五态统计（否则污染参数覆盖率）
+    dos = sum(f.sink == DOS for f in findings)
+    param_findings = [f for f in findings if f.sink != DOS]
+    confirmed = sum(f.status == CONFIRMED for f in param_findings)
+    suspected = sum(f.status == SUSPECTED for f in param_findings)
+    clean = sum(f.status == LIKELY_CLEAN for f in param_findings)
+    unreached = sum(f.status == UNREACHED for f in param_findings)
+    skipped = sum(f.status == SKIPPED for f in param_findings)
 
+    # findings.json 写全量（含 DoS 可用性发现），便于机读/追踪
     (run_dir / "findings.json").write_text(
         json.dumps([asdict(f) for f in findings], ensure_ascii=False, indent=2))
 
@@ -131,8 +135,8 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
         reporter.emit("report.saved", path=str(report_path))
 
     reporter.emit("run.end", duration=time.time() - t0, confirmed=confirmed, suspected=suspected,
-                  clean=clean, unreached=unreached, skipped=skipped, total=len(findings),
-                  dry_run=settings.dry_run)
+                  clean=clean, unreached=unreached, skipped=skipped, dos=dos,
+                  total=len(param_findings), dry_run=settings.dry_run)
 
     if gw and settings.gateway_reset in ("after", "both"):
         _gateway_reset(gw, gw_server, "after", reporter)

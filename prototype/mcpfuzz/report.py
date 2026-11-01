@@ -3,16 +3,19 @@ from __future__ import annotations
 
 import time
 
-from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED
+from mcpfuzz.orchestrator import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED
 
 
 def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
     meta = meta or {}
-    confirmed = [f for f in findings if f.status == CONFIRMED]
-    suspected = [f for f in findings if f.status == SUSPECTED]
-    clean = [f for f in findings if f.status == LIKELY_CLEAN]
-    unreached = [f for f in findings if f.status == UNREACHED]
-    skipped = [f for f in findings if f.status == SKIPPED]
+    # 可用性/DoS 是整工具级观测，单列一节，不混入 per-param 五态与覆盖率
+    dos = [f for f in findings if f.sink == DOS]
+    params = [f for f in findings if f.sink != DOS]
+    confirmed = [f for f in params if f.status == CONFIRMED]
+    suspected = [f for f in params if f.status == SUSPECTED]
+    clean = [f for f in params if f.status == LIKELY_CLEAN]
+    unreached = [f for f in params if f.status == UNREACHED]
+    skipped = [f for f in params if f.status == SKIPPED]
     tested = len(confirmed) + len(suspected) + len(clean) + len(unreached)
 
     lines = [
@@ -25,18 +28,21 @@ def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
         "",
         f"## 结论总览",
         "",
-        f"> 实际测试覆盖：{tested}/{len(findings)} 个参数（“未测成”不计入）。",
+        f"> 实际测试覆盖：{tested}/{len(params)} 个参数（“未测成”不计入）。",
         "",
         f"| 状态 | 数量 | 含义 |",
         f"|---|---|---|",
         f"| ● 确认漏洞 | {len(confirmed)} | 铁证命中，或可证经复测 |",
         f"| 疑似有 | {len(suspected)} | 仅弱证据（错误指纹 / 回连未越边界），**需人工复核** |",
-        f"| 疑似无漏洞 | {len(clean)} | 已触达但全套无命中 |",
-        f"| 未触达 | {len(unreached)} | 载荷已发出但全被拒/报错且基线不可达 |",
+        f"| 疑似无漏洞 | {len(clean)} | 本参数探针已触达 sink，全套无命中 |",
+        f"| 未触达 | {len(unreached)} | 本参数探针全被输入/schema 校验挡下，未触达 sink |",
         f"| 未测成 | {len(skipped)} | 工具侧原因未能发出有效测试，**不代表无漏洞** |",
-        f"| 总计 | {len(findings)} | |",
+        f"| 总计 | {len(params)} | |",
         "",
     ]
+    if dos:
+        lines.append(f"> ⚠ 另有 **{len(dos)}** 个工具在整套测试后存活探测持续失败（疑似 DoS/可用性），详见下节。")
+        lines.append("")
 
     if confirmed:
         lines.append("## 确认漏洞（含触发流程）")
@@ -47,6 +53,16 @@ def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
         lines.append("## 确认漏洞")
         lines.append("")
         lines.append("（本次运行未确认任何漏洞）")
+        lines.append("")
+
+    if dos:
+        lines.append("## 可用性 / 拒绝服务（疑似 DoS，需人工复核）")
+        lines.append("")
+        lines.append("> 整套载荷打完后，连续多次存活探测（复用会话心跳 + 新开会话）均失败，"
+                     "服务器疑似被打到崩溃/无响应。需人工复测确认是稳定可复现的 DoS 还是环境抖动。")
+        lines.append("")
+        for f in dos:
+            lines.append(f"- `{f.tool}`：{f.note or '无说明'}")
         lines.append("")
 
     if suspected:

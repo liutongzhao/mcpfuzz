@@ -186,9 +186,11 @@ def _fmt_line(ev: Event) -> str | None:
     if t == "run.end":
         if d.get("dry_run"):
             return "（dry-run，未发送任何载荷）"
+        dos = d.get("dos", 0)
+        dos_part = f" | 疑似DoS {dos}" if dos else ""
         return (f"结束  用时 {d.get('duration', 0):.1f}s  "
                 f"确认 {d.get('confirmed')} | 疑似有 {d.get('suspected', 0)} | 疑似无 {d.get('clean')} | "
-                f"未触达 {d.get('unreached')} | 未测成 {d.get('skipped', 0)} | 总计 {d.get('total')}")
+                f"未触达 {d.get('unreached')} | 未测成 {d.get('skipped', 0)}{dos_part} | 总计 {d.get('total')}")
     return None
 
 
