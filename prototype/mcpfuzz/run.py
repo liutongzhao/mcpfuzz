@@ -60,87 +60,103 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     reporter.emit("run.start", target=target_arg, url=url, run_dir=str(run_dir))
     t0 = time.time()
 
-    # 网关集成（可选，不影响检测逻辑）：适配 reload 重置与按需启动
+    # 网关集成（可选，不影响检测逻辑）：检测时才上线 + 冷启动适配
     gw, gw_server = _gateway_setup(settings, url, reporter)
-    if gw and settings.gateway_reset in ("before", "both"):
-        _gateway_reset(gw, gw_server, "before", reporter)
-    if gw:
-        # reload 后 / 连接前等后端真正就绪（connected 且 tools>0），否则网关会用自己的身份+
-        # 空工具表应答，导致把"0 工具"当成功扫描。预算与冷启动超时挂钩，封顶 180s。
-        budget = max(60.0, min(settings.gateway_idle_ms / 1000.0, 180.0))
-        ready, ntools = gw.wait_ready(gw_server, timeout=budget)
-        reporter.emit("gateway.wait", server=gw_server, ready=ready, tools=ntools)
-
-    # 冷启动预算：经网关按需启动时，首个调用(catalog)会触发后端拉起，给足读超时
-    cat_timeout = settings.timeout
-    if settings.gateway_base:
-        cat_timeout = max(settings.timeout, settings.gateway_idle_ms / 1000.0)
-
     try:
-        catalog = fetch_catalog_sync(url, headers, retries=settings.retries, timeout=cat_timeout)
-    except Exception as e:
-        reporter.emit("connect.fail", error=str(e)[:300])
-        raise
+        # 激活：gateway_lifecycle 下"检测时才上线"——enable 现场拉起 stdio 后端(disconnected→connected)，
+        # 用完在 finally 里 disable 释放；非该模式沿用旧的 reload 重置语义(gateway_reset)。
+        if gw and settings.gateway_lifecycle:
+            try:
+                gw.enable(gw_server)
+                reporter.emit("gateway.enable", server=gw_server)
+            except Exception as e:
+                reporter.emit("gateway.error", error=f"启用后端 {gw_server} 失败：{str(e)[:200]}")
+        elif gw and settings.gateway_reset in ("before", "both"):
+            _gateway_reset(gw, gw_server, "before", reporter)
+        if gw:
+            # 连接后等后端真正就绪（connected 且 tools>0），否则网关会用自身身份+空工具表应答，
+            # 把"0 工具"当成功扫描。预算与冷启动超时挂钩，封顶 180s。
+            budget = max(60.0, min(settings.gateway_idle_ms / 1000.0, 180.0))
+            ready, ntools = gw.wait_ready(gw_server, timeout=budget)
+            reporter.emit("gateway.wait", server=gw_server, ready=ready, tools=ntools)
 
-    # 经网关时，0 工具几乎一定是后端未就绪（网关用自身身份应答），不要静默产出空报告
-    if gw and len(catalog.tools) == 0:
-        reporter.emit("gateway.error",
-                      error=f"后端 {gw_server} 未就绪（工具数为 0，可能仍在冷启动/未连上），已终止本次扫描；请稍后重试")
-        raise RuntimeError(f"网关后端 {gw_server} 未就绪：tools=0")
+        # 冷启动预算：经网关首个调用(catalog)会触发后端拉起，给足读超时
+        cat_timeout = settings.timeout
+        if settings.gateway_base:
+            cat_timeout = max(settings.timeout, settings.gateway_idle_ms / 1000.0)
 
-    reporter.emit("connect.ok", server_name=catalog.server_name, server_version=catalog.server_version,
-                  protocol_version=catalog.protocol_version, tool_count=len(catalog.tools))
-    (run_dir / "catalog.json").write_text(json.dumps(catalog.to_dict(), ensure_ascii=False, indent=2))
+        try:
+            catalog = fetch_catalog_sync(url, headers, retries=settings.retries, timeout=cat_timeout)
+        except Exception as e:
+            reporter.emit("connect.fail", error=str(e)[:300])
+            raise
 
-    sink_cache = (run_dir / ".sink_cache") if settings.use_cache else None
-    inferencer = SinkInferencer(use_llm=settings.llm_sink, cache_dir=sink_cache,
-                                workers=settings.llm_workers, reporter=reporter)
-    param_sinks = inferencer.infer(catalog)
-    (run_dir / "sinks.json").write_text(
-        json.dumps([_param_sink_dict(p) for p in param_sinks], ensure_ascii=False, indent=2))
+        # 经网关时，0 工具几乎一定是后端未就绪（网关用自身身份应答），不要静默产出空报告
+        if gw and len(catalog.tools) == 0:
+            reporter.emit("gateway.error",
+                          error=f"后端 {gw_server} 未就绪（工具数为 0，可能仍在冷启动/未连上），已终止本次扫描；请稍后重试")
+            raise RuntimeError(f"网关后端 {gw_server} 未就绪：tools=0")
 
-    only_tools = set(settings.only_tools) if settings.only_tools else None
-    exclude_tools = set(settings.exclude_tools) if settings.exclude_tools else set()
-    only_sinks = set(settings.only_sinks) if settings.only_sinks else None
-    if exclude_tools or only_sinks:
-        param_sinks = [p for p in param_sinks
-                      if p.tool not in exclude_tools
-                      and (only_sinks is None or any(c in only_sinks for c in p.class_weights))]
+        reporter.emit("connect.ok", server_name=catalog.server_name, server_version=catalog.server_version,
+                      protocol_version=catalog.protocol_version, tool_count=len(catalog.tools))
+        (run_dir / "catalog.json").write_text(json.dumps(catalog.to_dict(), ensure_ascii=False, indent=2))
 
-    oracle = Oracle(settings.oob_callback, settings.oob_query)
-    # Orchestrator 内部会在 cache_dir 下建 .plan_cache/ 子目录；传 run_dir 本身即可
-    orch = Orchestrator(url, headers, catalog, oracle, cache_dir=run_dir if settings.use_cache else None,
-                        reporter=reporter, settings=settings)
-    try:
-        findings = orch.run(param_sinks, only_tools=only_tools, dry_run=settings.dry_run)
+        sink_cache = (run_dir / ".sink_cache") if settings.use_cache else None
+        inferencer = SinkInferencer(use_llm=settings.llm_sink, cache_dir=sink_cache,
+                                    workers=settings.llm_workers, reporter=reporter)
+        param_sinks = inferencer.infer(catalog)
+        (run_dir / "sinks.json").write_text(
+            json.dumps([_param_sink_dict(p) for p in param_sinks], ensure_ascii=False, indent=2))
+
+        only_tools = set(settings.only_tools) if settings.only_tools else None
+        exclude_tools = set(settings.exclude_tools) if settings.exclude_tools else set()
+        only_sinks = set(settings.only_sinks) if settings.only_sinks else None
+        if exclude_tools or only_sinks:
+            param_sinks = [p for p in param_sinks
+                          if p.tool not in exclude_tools
+                          and (only_sinks is None or any(c in only_sinks for c in p.class_weights))]
+
+        oracle = Oracle(settings.oob_callback, settings.oob_query)
+        # Orchestrator 内部会在 cache_dir 下建 .plan_cache/ 子目录；传 run_dir 本身即可
+        orch = Orchestrator(url, headers, catalog, oracle, cache_dir=run_dir if settings.use_cache else None,
+                            reporter=reporter, settings=settings)
+        try:
+            findings = orch.run(param_sinks, only_tools=only_tools, dry_run=settings.dry_run)
+        finally:
+            orch.close()   # 释放智能体常驻事件循环
+
+        # 可用性/DoS 发现是整工具级观测，不计入 per-param 五态统计（否则污染参数覆盖率）
+        dos = sum(f.sink == DOS for f in findings)
+        param_findings = [f for f in findings if f.sink != DOS]
+        confirmed = sum(f.status == CONFIRMED for f in param_findings)
+        suspected = sum(f.status == SUSPECTED for f in param_findings)
+        clean = sum(f.status == LIKELY_CLEAN for f in param_findings)
+        unreached = sum(f.status == UNREACHED for f in param_findings)
+        skipped = sum(f.status == SKIPPED for f in param_findings)
+
+        # findings.json 写全量（含 DoS 可用性发现），便于机读/追踪
+        (run_dir / "findings.json").write_text(
+            json.dumps([asdict(f) for f in findings], ensure_ascii=False, indent=2))
+
+        if not settings.dry_run:
+            report_path = run_dir / "report.md"
+            report_path.write_text(render_markdown(catalog, findings))
+            reporter.emit("report.saved", path=str(report_path))
+
+        reporter.emit("run.end", duration=time.time() - t0, confirmed=confirmed, suspected=suspected,
+                      clean=clean, unreached=unreached, skipped=skipped, dos=dos,
+                      total=len(param_findings), dry_run=settings.dry_run)
+        return findings
     finally:
-        orch.close()   # 释放智能体常驻事件循环
-
-    # 可用性/DoS 发现是整工具级观测，不计入 per-param 五态统计（否则污染参数覆盖率）
-    dos = sum(f.sink == DOS for f in findings)
-    param_findings = [f for f in findings if f.sink != DOS]
-    confirmed = sum(f.status == CONFIRMED for f in param_findings)
-    suspected = sum(f.status == SUSPECTED for f in param_findings)
-    clean = sum(f.status == LIKELY_CLEAN for f in param_findings)
-    unreached = sum(f.status == UNREACHED for f in param_findings)
-    skipped = sum(f.status == SKIPPED for f in param_findings)
-
-    # findings.json 写全量（含 DoS 可用性发现），便于机读/追踪
-    (run_dir / "findings.json").write_text(
-        json.dumps([asdict(f) for f in findings], ensure_ascii=False, indent=2))
-
-    if not settings.dry_run:
-        report_path = run_dir / "report.md"
-        report_path.write_text(render_markdown(catalog, findings))
-        reporter.emit("report.saved", path=str(report_path))
-
-    reporter.emit("run.end", duration=time.time() - t0, confirmed=confirmed, suspected=suspected,
-                  clean=clean, unreached=unreached, skipped=skipped, dos=dos,
-                  total=len(param_findings), dry_run=settings.dry_run)
-
-    if gw and settings.gateway_reset in ("after", "both"):
-        _gateway_reset(gw, gw_server, "after", reporter)
-    return findings
+        # 收尾：停用释放资源（即使检测中途异常也执行）；非 lifecycle 模式沿用旧的 after-reload
+        if gw and settings.gateway_lifecycle:
+            try:
+                gw.disable(gw_server)
+                reporter.emit("gateway.disable", server=gw_server)
+            except Exception as e:
+                reporter.emit("gateway.error", error=f"停用后端 {gw_server} 失败：{str(e)[:200]}")
+        elif gw and settings.gateway_reset in ("after", "both"):
+            _gateway_reset(gw, gw_server, "after", reporter)
 
 
 def _gateway_setup(settings, url, reporter):

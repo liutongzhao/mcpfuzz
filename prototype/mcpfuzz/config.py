@@ -52,6 +52,8 @@ class Settings:
     gateway_password: str | None = None
     gateway_server: str | None = None      # 该目标在网关里的后端名；默认从 /mcp/{server} URL 解析
     gateway_reset: str = "off"             # off|before|after|both：扫描前/后用 reload 重置后端
+    gateway_lifecycle: bool = True         # 检测时才上线：扫前 enable 拉起后端、扫后 disable 杀进程释放资源，
+                                           # 避免批量检测时大量 stdio 后端常驻把网关压垮
     gateway_idle_ms: int = 300000          # 网关空闲关闭超时（按需启动）；用作首连冷启动预算
 
 

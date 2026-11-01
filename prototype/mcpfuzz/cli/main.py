@@ -93,6 +93,8 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
                       help="扫描前/后用 reload 重置后端到干净态（默认 off）")
     g_gw.add_argument("--gateway-idle-ms", dest="gateway_idle_ms", type=int, default=None, metavar="MS",
                       help="网关空闲关闭超时（按需启动），用作首连冷启动预算（默认 300000）")
+    g_gw.add_argument("--gateway-keep-online", dest="gateway_lifecycle", action="store_false", default=None,
+                      help="检测后不停用后端（默认：检测时才 enable 上线、用完 disable 释放资源）")
 
 
 def build_parser() -> argparse.ArgumentParser:

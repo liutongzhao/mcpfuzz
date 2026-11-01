@@ -61,14 +61,25 @@ class GatewayClient:
         return tok
 
     def reload(self, server: str) -> dict:
-        """强制重连上游：stdio 后端 = 杀进程重拉，回到干净状态。"""
+        """强制重连上游：stdio 后端 = 杀进程重拉，回到干净状态（仅对已启用的后端有效）。"""
         return self._req("POST", f"/api/servers/{server}/reload")
 
+    def enable(self, server: str) -> dict:
+        """启用并连接后端：stdio 后端会被现场拉起进程，变 connected。用于"检测时才上线"。"""
+        return self._req("POST", f"/api/servers/{server}/toggle", {"enabled": True})
+
+    def disable(self, server: str) -> dict:
+        """停用并断开后端：杀进程、释放资源，变 disconnected。用于检测完收尾，避免大量后端常驻把网关压垮。"""
+        return self._req("POST", f"/api/servers/{server}/toggle", {"enabled": False})
+
     def server_record(self, server: str) -> dict | None:
-        for s in self._req("GET", "/api/servers").get("data", []):
-            if s.get("name") == server:
-                return s
-        return None
+        """查单个后端状态：用单后端端点 GET /api/servers/{name}，避开全量 /api/servers——
+        后者会枚举所有后端并探测状态，在后端数量多时极慢甚至超时（批量部署后尤其明显）。"""
+        try:
+            d = self._req("GET", f"/api/servers/{server}")
+        except RuntimeError:
+            return None
+        return d.get("data", d) or None
 
     def status(self, server: str) -> str | None:
         rec = self.server_record(server)
