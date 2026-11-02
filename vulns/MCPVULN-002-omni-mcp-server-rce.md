@@ -114,6 +114,12 @@ PY
 # 核验：docker exec mcphub cat /tmp/poc_omni  → uid=0(root) gid=0(root) ...
 ```
 
+## 6b. 附：同服务的其它问题（次要）
+
+复核"疑似"条目时在 omni 上另发现：
+- **`web_fetch.url` 存在 SSRF**：无内网/链路本地过滤——`web_fetch("http://127.0.0.1:3000/api/servers")` 返回 `401`（证明连上了只有内网可达的网关管理 API），`http://127.0.0.1:3000/` 可达。相比之下同批的 `ashlrai/webfetch` 对内网/元数据统一 `host blocked by policy`。本项因 omni 已是 root RCE 而严重度相对次要，但独立看仍是一个 SSRF 缺陷，修复应加内网/链路本地/元数据地址黑名单。
+- `system_read_file.path` / `system_list_dir.path` 为按路径读文件/列目录（设计即如此），非独立注入漏洞。
+
 ## 7. 修复建议
 
 - git 工具必须**用 argv 数组参数化调用**（如 `execFile("git",["log","-n",str(n)])`），**禁止经 shell 字符串拼接**；
