@@ -14,3 +14,5 @@
 | ID | MCP 服务 | 工具.参数 | 类型 | 严重度 | 状态 | 可利用 | 发现日期 | 记录 |
 |---|---|---|---|---|---|---|---|---|
 | MCPVULN-001 | mcp-interactive-terminal@1.0.7 | send_command.input | 命令注入(CWE-78) | 严重 | confirmed | 是 | 2026-11-01 | [链接](MCPVULN-001-interactive-terminal-rce.md) |
+| MCPVULN-002 | @bitofacoder/omni-mcp-server@1.1.1 | git_commit.message / git_log.maxCount | 命令注入(CWE-78) | 严重 | confirmed | 是 | 2026-11-01 | [链接](MCPVULN-002-omni-mcp-server-rce.md) |
+| MCPVULN-003 | @mindstone/mcp-server-browser-automation@0.2.4 | browser_get_text.ref | 参数注入(CWE-88) | 中 | confirmed | 部分 | 2026-11-01 | [链接](MCPVULN-003-browser-automation-arg-injection.md) |
