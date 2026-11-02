@@ -106,32 +106,51 @@ def _extract_calls(messages) -> list:
     return calls
 
 
+def _arg_spec(param_name, value, prior_results):
+    """决定一个参数在配方里是录"字面量"还是"依赖边(from_step)"：
+    若该值**出现在某个更早步骤的成功响应里**（= 动态值，如新建会话返回的 session_id）→ 录成
+    from_step，回放时用 extract_value 从那一步**当次**响应重新取值，避免字面量过期（见 ④/
+    docs/序列构建智能体设计.md）。否则录字面量。仅对足够长/非平凡的值启用，避免 '1'/'true' 误匹配。"""
+    sval = str(value)
+    if len(sval) >= 6 and not isinstance(value, bool):
+        for step_no, rtext in prior_results:
+            if rtext and sval in str(rtext):
+                return {"src": "from_step", "step": step_no,
+                        "extract": f"{param_name}（值形如 '{sval[:48]}'）"}
+    return {"src": "literal", "value": value}
+
+
 def _build_plan_from_calls(target_name, calls, target_tool) -> Plan:
     """把智能体轨迹里的成功调用拼成配方：成功的前置（非目标）+ 目标工具一步，末步必为目标工具。
 
-    参数一律按 literal 录制（回放时照用这组走通过的良性值；服务端文件/资源态在同机持久，可复现）。
+    参数默认按值录制；但若某参数的值来自更早步骤的响应（动态值，如新建会话的 session_id）→ 录成
+    from_step 依赖边，回放时重新取值，避免"字面量过期"（会话重置/令牌过期时字面量失效）。
     """
-    good_pre = [(t, a) for (t, a, _r, err) in calls if (not err) and t != target_name]
-    target_ok = [(t, a) for (t, a, _r, err) in calls if (not err) and t == target_name]
-    target_any = [(t, a) for (t, a, _r, _e) in calls if t == target_name]
+    good = [(t, a, r) for (t, a, r, err) in calls if not err]
+    pre = [(t, a, r) for (t, a, r) in good if t != target_name]
+    tgt_ok = [(t, a) for (t, a, _r) in good if t == target_name]
+    tgt_any = [(t, a) for (t, a, _r, _e) in calls if t == target_name]
 
     steps = []
-    for i, (t, a) in enumerate(good_pre, 1):
-        steps.append(Step(i, t, {k: {"src": "literal", "value": v} for k, v in a.items()}))
+    prior_results = []   # [(step_no, response_text)]，只含更早步骤，供 from_step 回链
+    for (t, a, r) in pre:
+        sno = len(steps) + 1
+        steps.append(Step(sno, t, {k: _arg_spec(k, v, prior_results) for k, v in a.items()}))
+        prior_results.append((sno, r))
 
     # 目标工具实参：优先用成功那次的，其次用任意尝试过的，最后 schema 兜底
-    if target_ok:
-        targs = target_ok[0][1]
-    elif target_any:
-        targs = target_any[-1][1]
+    if tgt_ok:
+        targs = tgt_ok[0][1]
+    elif tgt_any:
+        targs = tgt_any[-1][1]
     else:
         targs = {p.path: planner._fallback_literal(p) for p in target_tool.params if p.required}
     steps.append(Step(len(steps) + 1, target_name,
-                      {k: {"src": "literal", "value": v} for k, v in targs.items()}))
+                      {k: _arg_spec(k, v, prior_results) for k, v in targs.items()}))
 
-    reachable = bool(target_ok)
-    note = (f"智能体走通目标（前置 {len(good_pre)} 步）" if reachable
-            else f"智能体未确认目标调通，按best-effort回放（前置 {len(good_pre)} 步）")
+    reachable = bool(tgt_ok)
+    note = (f"智能体走通目标（前置 {len(pre)} 步）" if reachable
+            else f"智能体未确认目标调通，按best-effort回放（前置 {len(pre)} 步）")
     return Plan(steps=steps, reachable=True, note=note)   # 乐观回放；真实可达由 executor 基线判定
 
 

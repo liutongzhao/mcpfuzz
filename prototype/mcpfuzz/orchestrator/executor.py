@@ -223,6 +223,18 @@ def _blamed_param(err: str) -> str | None:
     return None
 
 
+def _is_type_enforced(err: str, param_path) -> bool:
+    """报错是否表明【目标参数本身】被服务端强制为数值/布尔类型（收到字符串被拒）。
+    用于 P5：数字参数先探 1 条，若类型被强制 → 字符串注入进不去，提前停、省掉剩余探针；
+    若服务端反而收下了字符串（宽松校验，如 omni git_log.maxCount）→ 不触发，继续打全套（保召回）。"""
+    if not err:
+        return False
+    if not re.search(r"expected (number|integer|bigint|boolean)", err, re.I):
+        return False
+    blamed = _blamed_param(err)
+    return blamed is not None and blamed == str(param_path).split(".")[0]
+
+
 def _skipped_all(target, sink_params, note, reporter) -> list:
     out = [Finding(target, ps.param_path, _repr_class(ps), SKIPPED, note=note) for ps in sink_params]
     for f in out:
@@ -269,6 +281,8 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     saw_ok = False
     saw_program_error = False   # 载荷抵达后端程序、被当非法参数拒（已触达，用于区分"疑似无 vs 未触达"）
     sent_any = False      # 是否真的发出过载荷（全被"锁死约束"跳过时为 False）
+    type_locked = False   # P5：数字参数被服务端强制类型校验 → 提前停
+    numeric = getattr(prior, "param_type", None) in ("number", "integer")
     last_err = ""
     for p in probes:
         args = _shaped_args(base_args, prior, p.value, getattr(p, "placement", "value"))
@@ -287,6 +301,10 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 last_err = err_text
             if _reached_via_error(res):
                 saw_program_error = True
+            if numeric and _is_type_enforced(err_text, param):
+                # 服务端强制数值类型、字符串被拒 → 字符串注入进不去，省掉剩余探针（宽松校验的服务端不会命中此分支）
+                type_locked = True
+                break
         else:
             saw_ok = True
 
@@ -366,6 +384,9 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     # 参数的探针被 schema 全弹回时，会被 baseline 误翻成"疑似无漏洞"，掩盖"其实没测到"。
     if saw_ok or saw_program_error:
         return Finding(target, param, repr_cls, LIKELY_CLEAN, note="")
+    if type_locked:
+        return Finding(target, param, repr_cls, UNREACHED,
+                       note="未触达 sink：服务端对该数值参数强制类型校验，字符串注入无法进入（探 1 条即停，省余下探针）")
     if not sent_any:
         # 所有载荷都因参数被声明约束锁死（uuid/锚死 pattern/刚性 format）而无法构造合法骨架 → 未发送
         return Finding(target, param, repr_cls, UNREACHED,
