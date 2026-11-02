@@ -1,0 +1,884 @@
+[
+  {
+    "gateway_name": "ai.quorumdb_quorum",
+    "npm_package": "quorum-mcp-server",
+    "version": "4.0.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "quorum-mcp-server@4.0.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 23,
+      "unreached": 7,
+      "skipped": 0
+    },
+    "run_dir": "20261101-230145__http___127.0.0.1_3000_mcp_ai.quorumdb_quorum"
+  },
+  {
+    "gateway_name": "ai.spideriq_publish",
+    "npm_package": "@spideriq/mcp-publish",
+    "version": "1.25.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@spideriq/mcp-publish@1.25.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 796,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-204320__http___127.0.0.1_3000_mcp_ai.spideriq_publish"
+  },
+  {
+    "gateway_name": "capital.hove_read-only-local-postgres-mcp-server",
+    "npm_package": "@hovecapital/read-only-postgres-mcp-server",
+    "version": "0.1.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@hovecapital/read-only-postgres-mcp-server@0.1.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 3,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261102-005509__http___127.0.0.1_3000_mcp_capital.hove_read-only-local-postgres-mcp-server"
+  },
+  {
+    "gateway_name": "com.dbconvert_streams",
+    "npm_package": "@dbconvert/stream-mcp",
+    "version": "2.7.3",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@dbconvert/stream-mcp@2.7.3"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 2,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-193056__http___127.0.0.1_3000_mcp_com.dbconvert_streams"
+  },
+  {
+    "gateway_name": "io.github.AnIayana_high-performance-mcp-server",
+    "npm_package": "high-performance-mcp-server",
+    "version": "0.5.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "high-performance-mcp-server@0.5.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 1,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-200827__http___127.0.0.1_3000_mcp_io.github.AnIayana_high-performance-mcp-server"
+  },
+  {
+    "gateway_name": "io.github.Ashutos1997_ffmpeg-mcp-server",
+    "npm_package": "@ash_j1997/ffmpeg-mcp-server",
+    "version": "0.5.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@ash_j1997/ffmpeg-mcp-server@0.5.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 11,
+      "clean": 36,
+      "unreached": 24,
+      "skipped": 0
+    },
+    "run_dir": "20261101-214511__http___127.0.0.1_3000_mcp_io.github.Ashutos1997_ffmpeg-mcp-server"
+  },
+  {
+    "gateway_name": "io.github.InstaNode-dev_mcp",
+    "npm_package": "@instanode/mcp",
+    "version": "0.7.2",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@instanode/mcp@0.7.2"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 4,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-235124__http___127.0.0.1_3000_mcp_io.github.InstaNode-dev_mcp"
+  },
+  {
+    "gateway_name": "io.github.Keremturker_cmpose",
+    "npm_package": "@cmpose/mcp",
+    "version": "0.8.9",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@cmpose/mcp@0.8.9"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 23,
+      "unreached": 7,
+      "skipped": 0
+    },
+    "run_dir": "20261101-195652__http___127.0.0.1_3000_mcp_io.github.Keremturker_cmpose"
+  },
+  {
+    "gateway_name": "io.github.Lunarwerx_connections",
+    "npm_package": "connections-mcp",
+    "version": "2.253.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "connections-mcp@2.253.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 15,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-233419__http___127.0.0.1_3000_mcp_io.github.Lunarwerx_connections"
+  },
+  {
+    "gateway_name": "io.github.Patrizzos_envspeak",
+    "npm_package": "@patrizzos/envspeak",
+    "version": "0.1.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@patrizzos/envspeak@0.1.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 5,
+      "clean": 18,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261102-002206__http___127.0.0.1_3000_mcp_io.github.Patrizzos_envspeak"
+  },
+  {
+    "gateway_name": "io.github.Rheopyrin_db-access-mcp",
+    "npm_package": "@rheopyrin/db-access-mcp",
+    "version": "0.1.5",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@rheopyrin/db-access-mcp@0.1.5"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 12,
+      "unreached": 15,
+      "skipped": 0
+    },
+    "run_dir": "20261101-233629__http___127.0.0.1_3000_mcp_io.github.Rheopyrin_db-access-mcp"
+  },
+  {
+    "gateway_name": "io.github.RichardLemmon_agent-team",
+    "npm_package": "agent-team-mcp",
+    "version": "1.5.1",
+    "command": "npx",
+    "args": [
+      "-y",
+      "agent-team-mcp@1.5.1"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 95,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261102-002359__http___127.0.0.1_3000_mcp_io.github.RichardLemmon_agent-team"
+  },
+  {
+    "gateway_name": "io.github.Shrike-Security_shrike-mcp",
+    "npm_package": "shrike-mcp",
+    "version": "4.1.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "shrike-mcp@4.1.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 80,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-220306__http___127.0.0.1_3000_mcp_io.github.Shrike-Security_shrike-mcp"
+  },
+  {
+    "gateway_name": "io.github.YawLabs_terraform-cwd-mcp",
+    "npm_package": "@yawlabs/terraform-cwd-mcp",
+    "version": "0.1.2",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@yawlabs/terraform-cwd-mcp@0.1.2"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 24,
+      "unreached": 8,
+      "skipped": 0
+    },
+    "run_dir": "20261101-221244__http___127.0.0.1_3000_mcp_io.github.YawLabs_terraform-cwd-mcp"
+  },
+  {
+    "gateway_name": "io.github.aethynio_aethyn-browser-mcp",
+    "npm_package": "aethyn-browser-mcp",
+    "version": "0.1.1",
+    "command": "npx",
+    "args": [
+      "-y",
+      "aethyn-browser-mcp@0.1.1"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 14,
+      "unreached": 5,
+      "skipped": 0
+    },
+    "run_dir": "20261102-003127__http___127.0.0.1_3000_mcp_io.github.aethynio_aethyn-browser-mcp"
+  },
+  {
+    "gateway_name": "io.github.amol21p_interactive-terminal",
+    "npm_package": "mcp-interactive-terminal",
+    "version": "1.0.7",
+    "command": "npx",
+    "args": [
+      "-y",
+      "mcp-interactive-terminal@1.0.7"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 10,
+      "unreached": 9,
+      "skipped": 0
+    },
+    "run_dir": "20261101-185339__http___127.0.0.1_3000_mcp_io.github.amol21p_interactive-terminal"
+  },
+  {
+    "gateway_name": "io.github.antonorlov_mcp-postgres-server",
+    "npm_package": "mcp-postgres-server",
+    "version": "0.3.1",
+    "command": "npx",
+    "args": [
+      "-y",
+      "mcp-postgres-server@0.3.1"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 7,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-185528__http___127.0.0.1_3000_mcp_io.github.antonorlov_mcp-postgres-server"
+  },
+  {
+    "gateway_name": "io.github.ashlrai_webfetch",
+    "npm_package": "getwebfetch-mcp",
+    "version": "0.1.5",
+    "command": "npx",
+    "args": [
+      "-y",
+      "getwebfetch-mcp@0.1.5"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 2,
+      "clean": 7,
+      "unreached": 17,
+      "skipped": 0
+    },
+    "run_dir": "20261101-235910__http___127.0.0.1_3000_mcp_io.github.ashlrai_webfetch"
+  },
+  {
+    "gateway_name": "io.github.bitofacoder_omni-mcp-server",
+    "npm_package": "@bitofacoder/omni-mcp-server",
+    "version": "1.1.1",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@bitofacoder/omni-mcp-server@1.1.1"
+    ],
+    "result": {
+      "confirmed": 2,
+      "suspected": 3,
+      "clean": 9,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-202937__http___127.0.0.1_3000_mcp_io.github.bitofacoder_omni-mcp-server"
+  },
+  {
+    "gateway_name": "io.github.cheveguerra_sqlite-local-ai-memory",
+    "npm_package": "sqlite-local-ai-memory",
+    "version": "1.5.3",
+    "command": "npx",
+    "args": [
+      "-y",
+      "sqlite-local-ai-memory@1.5.3"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 11,
+      "unreached": 1,
+      "skipped": 0
+    },
+    "run_dir": "20261101-221529__http___127.0.0.1_3000_mcp_io.github.cheveguerra_sqlite-local-ai-memory"
+  },
+  {
+    "gateway_name": "io.github.cocaxcode_database-mcp",
+    "npm_package": "@cocaxcode/database-mcp",
+    "version": "0.1.14",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@cocaxcode/database-mcp@0.1.14"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 2,
+      "clean": 36,
+      "unreached": 6,
+      "skipped": 0
+    },
+    "run_dir": "20261101-203159__http___127.0.0.1_3000_mcp_io.github.cocaxcode_database-mcp"
+  },
+  {
+    "gateway_name": "io.github.cyanheads_cern-opendata-mcp-server",
+    "npm_package": "@cyanheads/cern-opendata-mcp-server",
+    "version": "0.3.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@cyanheads/cern-opendata-mcp-server@0.3.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 1,
+      "unreached": 34,
+      "skipped": 0
+    },
+    "run_dir": "20261102-000106__http___127.0.0.1_3000_mcp_io.github.cyanheads_cern-opendata-mcp-server"
+  },
+  {
+    "gateway_name": "io.github.cyanheads_wikidata-mcp-server",
+    "npm_package": "@cyanheads/wikidata-mcp-server",
+    "version": "0.3.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@cyanheads/wikidata-mcp-server@0.3.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 10,
+      "unreached": 10,
+      "skipped": 0
+    },
+    "run_dir": "20261102-000416__http___127.0.0.1_3000_mcp_io.github.cyanheads_wikidata-mcp-server"
+  },
+  {
+    "gateway_name": "io.github.domdomegg_filesystem-mcp",
+    "npm_package": "filesystem-mcp",
+    "version": "1.3.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "filesystem-mcp@1.3.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 7,
+      "unreached": 3,
+      "skipped": 0
+    },
+    "run_dir": "20261102-000905__http___127.0.0.1_3000_mcp_io.github.domdomegg_filesystem-mcp"
+  },
+  {
+    "gateway_name": "io.github.domdomegg_shell-exec-mcp",
+    "npm_package": "shell-exec-mcp",
+    "version": "1.2.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "shell-exec-mcp@1.2.0"
+    ],
+    "result": {
+      "confirmed": 1,
+      "suspected": 0,
+      "clean": 1,
+      "unreached": 1,
+      "skipped": 0
+    },
+    "run_dir": "20261101-193723__http___127.0.0.1_3000_mcp_io.github.domdomegg_shell-exec-mcp"
+  },
+  {
+    "gateway_name": "io.github.ed-smartass_dbmole-mcp",
+    "npm_package": "dbmole-mcp",
+    "version": "0.2.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "dbmole-mcp@0.2.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 14,
+      "unreached": 26,
+      "skipped": 0
+    },
+    "run_dir": "20261101-203541__http___127.0.0.1_3000_mcp_io.github.ed-smartass_dbmole-mcp"
+  },
+  {
+    "gateway_name": "io.github.ellmos-ai_ellmos-filecommander-mcp",
+    "npm_package": "ellmos-filecommander-mcp",
+    "version": "1.11.4",
+    "command": "npx",
+    "args": [
+      "-y",
+      "ellmos-filecommander-mcp@1.11.4"
+    ],
+    "result": {
+      "confirmed": 2,
+      "suspected": 1,
+      "clean": 80,
+      "unreached": 10,
+      "skipped": 0
+    },
+    "run_dir": "20261101-185607__http___127.0.0.1_3000_mcp_io.github.ellmos-ai_ellmos-filecommander-mcp"
+  },
+  {
+    "gateway_name": "io.github.formfeed-dev_formfeed",
+    "npm_package": "@formfeed/mcp",
+    "version": "0.3.21",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@formfeed/mcp@0.3.21"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 22,
+      "unreached": 16,
+      "skipped": 0
+    },
+    "run_dir": "20261101-222233__http___127.0.0.1_3000_mcp_io.github.formfeed-dev_formfeed"
+  },
+  {
+    "gateway_name": "io.github.hypnosis_docker-mcp-server",
+    "npm_package": "@hypnosis/docker-mcp-server",
+    "version": "2.0.1",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@hypnosis/docker-mcp-server@2.0.1"
+    ],
+    "result": {
+      "confirmed": 1,
+      "suspected": 0,
+      "clean": 53,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-190342__http___127.0.0.1_3000_mcp_io.github.hypnosis_docker-mcp-server"
+  },
+  {
+    "gateway_name": "io.github.j0hanz_memory-mcp",
+    "npm_package": "@j0hanz/memory-mcp",
+    "version": "1.7.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@j0hanz/memory-mcp@1.7.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 5,
+      "unreached": 29,
+      "skipped": 0
+    },
+    "run_dir": "20261102-003351__http___127.0.0.1_3000_mcp_io.github.j0hanz_memory-mcp"
+  },
+  {
+    "gateway_name": "io.github.jojo-labs_smart-web",
+    "npm_package": "smart-web-mcp",
+    "version": "1.10.19",
+    "command": "npx",
+    "args": [
+      "-y",
+      "smart-web-mcp@1.10.19"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 0,
+      "unreached": 73,
+      "skipped": 0
+    },
+    "run_dir": "20261102-003717__http___127.0.0.1_3000_mcp_io.github.jojo-labs_smart-web"
+  },
+  {
+    "gateway_name": "io.github.lukisch_bach-filecommander-mcp",
+    "npm_package": "bach-filecommander-mcp",
+    "version": "1.7.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "bach-filecommander-mcp@1.7.0"
+    ],
+    "result": {
+      "confirmed": 1,
+      "suspected": 1,
+      "clean": 75,
+      "unreached": 6,
+      "skipped": 0
+    },
+    "run_dir": "20261101-222542__http___127.0.0.1_3000_mcp_io.github.lukisch_bach-filecommander-mcp"
+  },
+  {
+    "gateway_name": "io.github.malamutemayhem_chessdotcom",
+    "npm_package": "@unclick/chessdotcom-mcp",
+    "version": "0.1.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@unclick/chessdotcom-mcp@0.1.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 5,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-223238__http___127.0.0.1_3000_mcp_io.github.malamutemayhem_chessdotcom"
+  },
+  {
+    "gateway_name": "io.github.malamutemayhem_igdb",
+    "npm_package": "@unclick/igdb-mcp",
+    "version": "0.1.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@unclick/igdb-mcp@0.1.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 17,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-202100__http___127.0.0.1_3000_mcp_io.github.malamutemayhem_igdb"
+  },
+  {
+    "gateway_name": "io.github.malamutemayhem_lichess",
+    "npm_package": "@unclick/lichess-mcp",
+    "version": "0.1.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@unclick/lichess-mcp@0.1.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 7,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-223337__http___127.0.0.1_3000_mcp_io.github.malamutemayhem_lichess"
+  },
+  {
+    "gateway_name": "io.github.malamutemayhem_radiobrowser",
+    "npm_package": "@unclick/radiobrowser-mcp",
+    "version": "0.1.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@unclick/radiobrowser-mcp@0.1.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 8,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-223429__http___127.0.0.1_3000_mcp_io.github.malamutemayhem_radiobrowser"
+  },
+  {
+    "gateway_name": "io.github.marin1321_mcp-devtools",
+    "npm_package": "@oscarmarin/mcp-devtools",
+    "version": "1.0.1",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@oscarmarin/mcp-devtools@1.0.1"
+    ],
+    "result": {
+      "confirmed": 1,
+      "suspected": 1,
+      "clean": 29,
+      "unreached": 15,
+      "skipped": 0
+    },
+    "run_dir": "20261101-191409__http___127.0.0.1_3000_mcp_io.github.marin1321_mcp-devtools"
+  },
+  {
+    "gateway_name": "io.github.mindstone_mcp-server-browser-automation",
+    "npm_package": "@mindstone/mcp-server-browser-automation",
+    "version": "0.2.4",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@mindstone/mcp-server-browser-automation@0.2.4"
+    ],
+    "result": {
+      "confirmed": 1,
+      "suspected": 0,
+      "clean": 15,
+      "unreached": 4,
+      "skipped": 0
+    },
+    "run_dir": "20261101-231323__http___127.0.0.1_3000_mcp_io.github.mindstone_mcp-server-browser-automation"
+  },
+  {
+    "gateway_name": "io.github.mindstone_mcp-server-replit-ssh",
+    "npm_package": "@mindstone/mcp-server-replit-ssh",
+    "version": "0.2.2",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@mindstone/mcp-server-replit-ssh@0.2.2"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 27,
+      "unreached": 2,
+      "skipped": 0
+    },
+    "run_dir": "20261101-223617__http___127.0.0.1_3000_mcp_io.github.mindstone_mcp-server-replit-ssh"
+  },
+  {
+    "gateway_name": "io.github.mrZedov_backend-investigator",
+    "npm_package": "@mr.zedov/backend-investigator",
+    "version": "1.7.2",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@mr.zedov/backend-investigator@1.7.2"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 16,
+      "unreached": 53,
+      "skipped": 0
+    },
+    "run_dir": "20261101-193748__http___127.0.0.1_3000_mcp_io.github.mrZedov_backend-investigator"
+  },
+  {
+    "gateway_name": "io.github.msanchezgrice_talkform",
+    "npm_package": "@talkform/mcp",
+    "version": "0.1.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@talkform/mcp@0.1.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 1,
+      "clean": 0,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-201441__http___127.0.0.1_3000_mcp_io.github.msanchezgrice_talkform"
+  },
+  {
+    "gateway_name": "io.github.neverinfamous_db-mcp",
+    "npm_package": "db-mcp",
+    "version": "1.0.2",
+    "command": "npx",
+    "args": [
+      "-y",
+      "db-mcp@1.0.2"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 0,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261102-004553__http___127.0.0.1_3000_mcp_io.github.neverinfamous_db-mcp"
+  },
+  {
+    "gateway_name": "io.github.onlsol_relay-remotify-mcp",
+    "npm_package": "remotify-mcp",
+    "version": "0.6.2",
+    "command": "npx",
+    "args": [
+      "-y",
+      "remotify-mcp@0.6.2"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 1,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-224448__http___127.0.0.1_3000_mcp_io.github.onlsol_relay-remotify-mcp"
+  },
+  {
+    "gateway_name": "io.github.orifisher2_sqlike-mcp",
+    "npm_package": "@sqlike/mcp",
+    "version": "0.2.3",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@sqlike/mcp@0.2.3"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 0,
+      "unreached": 9,
+      "skipped": 0
+    },
+    "run_dir": "20261101-203924__http___127.0.0.1_3000_mcp_io.github.orifisher2_sqlike-mcp"
+  },
+  {
+    "gateway_name": "io.github.qualienai_qualien-mcp",
+    "npm_package": "qualien-mcp",
+    "version": "0.6.2",
+    "command": "npx",
+    "args": [
+      "-y",
+      "qualien-mcp@0.6.2"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 2,
+      "clean": 79,
+      "unreached": 4,
+      "skipped": 0
+    },
+    "run_dir": "20261101-194927__http___127.0.0.1_3000_mcp_io.github.qualienai_qualien-mcp"
+  },
+  {
+    "gateway_name": "io.github.sdamarketing_tgcloud-mcp",
+    "npm_package": "tgcloud-mcp",
+    "version": "0.3.3",
+    "command": "npx",
+    "args": [
+      "-y",
+      "tgcloud-mcp@0.3.3"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 18,
+      "unreached": 5,
+      "skipped": 0
+    },
+    "run_dir": "20261101-225005__http___127.0.0.1_3000_mcp_io.github.sdamarketing_tgcloud-mcp"
+  },
+  {
+    "gateway_name": "io.github.sekera-radim_briefgate",
+    "npm_package": "@briefgate/mcp",
+    "version": "0.10.7",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@briefgate/mcp@0.10.7"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 75,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-225217__http___127.0.0.1_3000_mcp_io.github.sekera-radim_briefgate"
+  },
+  {
+    "gateway_name": "io.github.sendsoon_mcp",
+    "npm_package": "@sendsoon/mcp",
+    "version": "0.3.8",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@sendsoon/mcp@0.3.8"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 0,
+      "clean": 6,
+      "unreached": 0,
+      "skipped": 0
+    },
+    "run_dir": "20261101-232132__http___127.0.0.1_3000_mcp_io.github.sendsoon_mcp"
+  },
+  {
+    "gateway_name": "io.github.verygoodplugins_mcp-local-wp",
+    "npm_package": "@verygoodplugins/mcp-local-wp",
+    "version": "2.0.0",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@verygoodplugins/mcp-local-wp@2.0.0"
+    ],
+    "result": {
+      "confirmed": 0,
+      "suspected": 2,
+      "clean": 0,
+      "unreached": 4,
+      "skipped": 0
+    },
+    "run_dir": "20261101-202259__http___127.0.0.1_3000_mcp_io.github.verygoodplugins_mcp-local-wp"
+  }
+]
