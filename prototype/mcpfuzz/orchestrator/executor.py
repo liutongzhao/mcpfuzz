@@ -170,12 +170,23 @@ async def _liveness_recheck(liveness, rounds: int = 3, interval: float = 1.0):
 
 
 def _shaped_args(base_args, prior, value):
-    """按参数的结构类型摆放载荷，避免被后端程序之前的结构校验（expected array / expected record）
-    直接挡下：
-    - array  → 包成单元素列表 [value]（数组元素非字符串的参数在 sink 推断阶段已判惰性，不会到这里）
-    - object → 包成单键自由记录 {<key>: value}，载荷作为值，覆盖 env/headers/params 这类映射型参数
-    标量型保持原样。定型对象/嵌套结构的更复杂塑形属载荷合成方案，暂不在此通用处理。"""
+    """按参数声明的约束/结构摆放载荷，避免被后端程序之前的输入校验直接挡下。返回参数字典；
+    若该参数被声明约束锁死、这条载荷无法构造成合法骨架 → 返回 **None**（上层跳过该载荷）。
+
+    - **带格式约束的字符串**（pattern/format/minLength）：走约束感知的"合法骨架+注入"
+      （valuegen.inject_value）——如 `^proj-` → `proj-<载荷>`；uuid/锚死 pattern → None（如实无法注入）。
+    - array → [value]；object → {<key>: value}（载荷作值）。
+    - 其余标量（**含数字**）保持原样：数字仍以原值探测，保住"宽松校验服务端"的命中（如 omni maxCount）。
+    见 docs/参数值生成优化方案.md。"""
     t = getattr(prior, "param_type", None)
+    param = getattr(prior, "param", None)
+    if (param is not None and t in ("string", "union", "unknown")
+            and (param.pattern or param.str_format or param.min_length)):
+        from mcpfuzz import valuegen
+        shaped = valuegen.inject_value(param, value)
+        if shaped is None:
+            return None
+        return {**base_args, prior.param_path: shaped}
     if t == "array":
         v = [value]
     elif t == "object":
@@ -249,9 +260,13 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     weak = []             # [(vuln_class, probe_spec, evidence)] 弱证据 → 疑似有
     saw_ok = False
     saw_program_error = False   # 载荷抵达后端程序、被当非法参数拒（已触达，用于区分"疑似无 vs 未触达"）
+    sent_any = False      # 是否真的发出过载荷（全被"锁死约束"跳过时为 False）
     last_err = ""
     for p in probes:
         args = _shaped_args(base_args, prior, p.value)
+        if args is None:
+            continue   # 参数被声明约束锁死（uuid/锚死 pattern 等），这条载荷无法构造成合法骨架 → 跳过
+        sent_any = True
         res, latency = await _timed_call(session, target, args)
         text = res["text"] or ""
         reporter.emit("payload.sent", level="debug", tool=target, param=param, channel=p.channel,
@@ -331,7 +346,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     # 仅弱证据 → 疑似有
     if weak:
         cls, p, ev = weak[0]
-        args = _shaped_args(base_args, prior, p.value)
+        args = _shaped_args(base_args, prior, p.value) or base_args
         return Finding(target, param, cls, SUSPECTED, payload=p.value, channel=ev.get("channel", p.channel),
                        evidence=ev,
                        sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],
@@ -343,6 +358,10 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     # 参数的探针被 schema 全弹回时，会被 baseline 误翻成"疑似无漏洞"，掩盖"其实没测到"。
     if saw_ok or saw_program_error:
         return Finding(target, param, repr_cls, LIKELY_CLEAN, note="")
+    if not sent_any:
+        # 所有载荷都因参数被声明约束锁死（uuid/锚死 pattern/刚性 format）而无法构造合法骨架 → 未发送
+        return Finding(target, param, repr_cls, UNREACHED,
+                       note="未触达 sink：参数被声明约束（格式/枚举/类型）锁死，无法构造满足约束的注入载荷（未发送）")
     note = "未触达 sink：本参数所有探针在到达后端程序前被输入校验/参数约束拒绝"
     if last_err:
         err = str(last_err)

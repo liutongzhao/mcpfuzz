@@ -55,6 +55,7 @@ class ParamSinkPrior:
     inert: bool = False
     inert_reason: str = ""
     provenance: dict = field(default_factory=dict)      # {class: [证据串, ...]}
+    param: object = None                                 # 原始 catalog.Param（携带 pattern/format/长度等约束，供约束感知载荷用）
 
     def ranked_classes(self) -> list[str]:
         """按权重从高到低返回启用类别（供下游排序分预算）。"""

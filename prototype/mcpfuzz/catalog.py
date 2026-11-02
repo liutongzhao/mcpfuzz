@@ -18,6 +18,18 @@ class Param:
     default: object = None
     example: object = None
     item_type: str | None = None   # 当 type==array 时，元素类型
+    # —— JSON Schema 声明的约束（供约束感知的值/载荷生成用；见 docs/参数值生成优化方案.md）——
+    pattern: str | None = None          # pattern（正则）
+    str_format: str | None = None       # format：uuid/date-time/email/uri/ipv4/hostname…
+    min_length: int | None = None       # minLength
+    max_length: int | None = None       # maxLength
+    minimum: float | None = None        # minimum / exclusiveMinimum(数值形)
+    maximum: float | None = None        # maximum / exclusiveMaximum(数值形)
+    exclusive_min: bool = False
+    exclusive_max: bool = False
+    multiple_of: float | None = None    # multipleOf
+    min_items: int | None = None        # minItems
+    max_items: int | None = None        # maxItems
 
 
 @dataclass
@@ -68,6 +80,30 @@ def _example(schema: dict):
     return None
 
 
+def _constraints(sub: dict) -> dict:
+    """从一个属性子 schema 里读出声明的约束，供约束感知的值/载荷生成用。只读、不改行为。"""
+    mn, emn = sub.get("minimum"), sub.get("exclusiveMinimum")
+    mx, emx = sub.get("maximum"), sub.get("exclusiveMaximum")
+    # draft-07: exclusiveMinimum/Maximum 是数值；draft-04: 是布尔(配合 minimum/maximum)
+    minimum = mn if mn is not None else (emn if isinstance(emn, (int, float)) and not isinstance(emn, bool) else None)
+    maximum = mx if mx is not None else (emx if isinstance(emx, (int, float)) and not isinstance(emx, bool) else None)
+    excl_min = (emn is True) or (mn is None and isinstance(emn, (int, float)) and not isinstance(emn, bool))
+    excl_max = (emx is True) or (mx is None and isinstance(emx, (int, float)) and not isinstance(emx, bool))
+    return dict(
+        pattern=sub.get("pattern"),
+        str_format=sub.get("format"),
+        min_length=sub.get("minLength"),
+        max_length=sub.get("maxLength"),
+        minimum=minimum,
+        maximum=maximum,
+        exclusive_min=bool(excl_min),
+        exclusive_max=bool(excl_max),
+        multiple_of=sub.get("multipleOf"),
+        min_items=sub.get("minItems"),
+        max_items=sub.get("maxItems"),
+    )
+
+
 def flatten_schema(schema: dict, prefix: str = "", parent_required: bool = True) -> list[Param]:
     """递归摊平 JSON Schema 的 properties，返回叶子参数列表。"""
     out: list[Param] = []
@@ -85,12 +121,14 @@ def flatten_schema(schema: dict, prefix: str = "", parent_required: bool = True)
             items = sub.get("items") or {}
             item_type = _norm_type(items) if isinstance(items, dict) else "unknown"
             out.append(Param(path, "array", is_req, sub.get("description"),
-                             sub.get("enum"), sub.get("default"), _example(sub), item_type))
+                             sub.get("enum"), sub.get("default"), _example(sub), item_type,
+                             **_constraints(sub)))
             if item_type == "object" and isinstance(items, dict) and items.get("properties"):
                 out += flatten_schema(items, path + "[]", False)
         else:
             out.append(Param(path, typ, is_req, sub.get("description"),
-                             sub.get("enum"), sub.get("default"), _example(sub)))
+                             sub.get("enum"), sub.get("default"), _example(sub),
+                             **_constraints(sub)))
     return out
 
 

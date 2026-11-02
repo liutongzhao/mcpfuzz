@@ -81,14 +81,14 @@ class SinkInferencer:
             for p in tool.params:
                 inert, reason = is_inert(p)
                 if inert:
-                    out.append(ParamSinkPrior(tool.name, p.path, p.type, {}, True, reason))
+                    out.append(ParamSinkPrior(tool.name, p.path, p.type, {}, True, reason, param=p))
                     continue
                 rule_rs = rule_raises(p)
                 llm_rs = [Raise(x["type"], CONF_WEIGHT.get(x.get("confidence", "low"), CONF_WEIGHT["low"]),
                                 "llm", x.get("evidence", ""))
                           for x in tl.get(p.path, []) if x.get("type") in self.enabled]
                 weights, prov = _combine(self.enabled, rule_rs, llm_rs)
-                ps = ParamSinkPrior(tool.name, p.path, p.type, weights, False, "", prov)
+                ps = ParamSinkPrior(tool.name, p.path, p.type, weights, False, "", prov, param=p)
                 out.append(ps)
                 if prov:
                     hot += 1
