@@ -22,3 +22,4 @@ class ProbeSpec:
     rank: int = 0            # 越小越先发，支持早停
     reflection_safe: bool = True   # inband 命中是否"反射免疫"：期望签名不可能由输入被原样回显产生。
     #   False（如 AI 未知选项，token 就在输入里）→ 命中须有对应错误指纹佐证才算确认，否则仅弱证据。
+    placement: str = "value"   # object 型参数的载荷放置位：value（放映射的值）/ key（放映射的键）

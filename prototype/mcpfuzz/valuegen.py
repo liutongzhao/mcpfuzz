@@ -137,7 +137,20 @@ def benign_value(param):
         if any(k in name for k in _URL_KEYS):
             return "http://example.com/"
 
+    if param.type == "array":
+        n = getattr(param, "min_items", None) or 0
+        return [_benign_item(param)] * n if n > 0 else []
     return _enforce(param, _TYPE_DEFAULT.get(param.type, "test"))
+
+
+def _benign_item(param):
+    """数组元素的良性值（按声明的 item_type 粗略取）。"""
+    it = getattr(param, "item_type", None)
+    if it in ("integer", "number"):
+        return 1
+    if it == "boolean":
+        return True
+    return "test"
 
 
 def inject_value(param, payload: str):
@@ -160,7 +173,11 @@ def inject_value(param, payload: str):
             return _enforce(param, pref + payload)
         return _enforce(param, payload)   # 无 pattern/format → 载荷本身（补足 min_length）
     if t == "array":
-        return [payload]
+        arr = [payload]
+        n = getattr(param, "min_items", None) or 0
+        while len(arr) < n:                    # 补足 minItems，避免被 "Too small" 拒
+            arr.append(_benign_item(param))
+        return arr
     if t == "object":
-        return {"mcpfuzz": payload}
+        return {"mcpfuzz": payload}            # key 位注入由上层(executor._shaped_args)按 placement 另发
     return payload

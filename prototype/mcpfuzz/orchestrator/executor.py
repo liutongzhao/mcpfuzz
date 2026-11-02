@@ -169,7 +169,7 @@ async def _liveness_recheck(liveness, rounds: int = 3, interval: float = 1.0):
     return False, detail
 
 
-def _shaped_args(base_args, prior, value):
+def _shaped_args(base_args, prior, value, placement="value"):
     """按参数声明的约束/结构摆放载荷，避免被后端程序之前的输入校验直接挡下。返回参数字典；
     若该参数被声明约束锁死、这条载荷无法构造成合法骨架 → 返回 **None**（上层跳过该载荷）。
 
@@ -189,8 +189,12 @@ def _shaped_args(base_args, prior, value):
         return {**base_args, prior.param_path: shaped}
     if t == "array":
         v = [value]
+        n = (getattr(param, "min_items", None) or 0) if param else 0
+        while len(v) < n:                       # 补足 minItems（P3：minItems≥2 的数组）
+            v.append("x")
     elif t == "object":
-        v = {"mcpfuzz": value}
+        # P3：object 既测 value 位 {键:载荷}，也测 key 位 {载荷:值}（env 变量名/HTTP 头名型 sink）
+        v = {value: "mcpfuzz"} if placement == "key" else {"mcpfuzz": value}
     else:
         v = value
     return {**base_args, prior.param_path: v}
@@ -245,6 +249,10 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                         poll_window, reporter, settings, baseline_text, baseline_latency,
                         read_back=None):
     probes = synthesizer.synthesize(prior)
+    if getattr(prior, "param_type", None) == "object":
+        # P3：object 参数对每条载荷同时测 value 位与 key 位（交错，使截断后两位置都保留）
+        from dataclasses import replace
+        probes = [x for p in probes for x in (p, replace(p, placement="key"))]
     repr_cls = _repr_class(prior)
     param = prior.param_path
     max_payloads = getattr(settings, "max_payloads", None) if settings else None
@@ -263,7 +271,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     sent_any = False      # 是否真的发出过载荷（全被"锁死约束"跳过时为 False）
     last_err = ""
     for p in probes:
-        args = _shaped_args(base_args, prior, p.value)
+        args = _shaped_args(base_args, prior, p.value, getattr(p, "placement", "value"))
         if args is None:
             continue   # 参数被声明约束锁死（uuid/锚死 pattern 等），这条载荷无法构造成合法骨架 → 跳过
         sent_any = True
@@ -346,7 +354,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     # 仅弱证据 → 疑似有
     if weak:
         cls, p, ev = weak[0]
-        args = _shaped_args(base_args, prior, p.value) or base_args
+        args = _shaped_args(base_args, prior, p.value, getattr(p, "placement", "value")) or base_args
         return Finding(target, param, cls, SUSPECTED, payload=p.value, channel=ev.get("channel", p.channel),
                        evidence=ev,
                        sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],
