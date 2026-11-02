@@ -15,6 +15,22 @@ from . import agent, planner
 from .executor import run_tool
 from .types import SKIPPED, Finding, Plan
 
+# 智能体探索的事件循环：**进程级常驻**（跨所有服务/Orchestrator 共用一个）。
+# 为什么不能每服务新建/关闭：LangGraph 的 LLM 异步客户端(ChatOpenAI/httpx)把底层连接缓存在首次
+# 使用的事件循环上；若每个服务换新循环、扫完就关，下一个服务首个 agent 调用复用到的缓存客户端仍
+# 绑在已关闭的旧循环上 → "Event loop is closed"，致每个服务的第一个多步工具序列构建崩溃（P7）。
+# 进程级常驻一个循环即根治（攻击阶段用各自独立的 asyncio.run 临时循环，互不影响）。
+# 假设：批扫是**串行**的（cli 对目标逐个循环），任一时刻只有一个 _agent_run 在跑。若将来并行化
+# 或在多线程宿主里并发使用，需换成每线程循环或加重入保护，否则会 "event loop is already running"。
+_AGENT_LOOP = None
+
+
+def _get_agent_loop():
+    global _AGENT_LOOP
+    if _AGENT_LOOP is None or _AGENT_LOOP.is_closed():
+        _AGENT_LOOP = asyncio.new_event_loop()
+    return _AGENT_LOOP
+
 
 class _NullReporter:
     def emit(self, *a, **k):
@@ -37,7 +53,6 @@ class Orchestrator:
         self._reader = _find_reader(catalog)   # cross_tool canary 读回器（可能为 None）
         self.reporter = reporter or _NullReporter()
         self.settings = settings
-        self._agent_loop = None   # 智能体探索全程共用的常驻事件循环（见 _agent_run）
 
     def run(self, param_sinks, only_tools=None, dry_run: bool = False) -> list:
         """param_sinks: sink.ParamSinkPrior 列表。only_tools: 限定工具名集合(调试用)。
@@ -126,26 +141,18 @@ class Orchestrator:
             return await call_on(session, tool_name, args)
 
     def _agent_run(self, coro):
-        """在**常驻**事件循环上跑智能体协程。
-
-        不能用 asyncio.run（每工具新建/关闭一个循环）：LangGraph 用的 LLM 异步客户端
-        (ChatOpenAI/httpx) 会把底层连接缓存在首个事件循环上，下一个工具换新循环时缓存的
-        客户端仍绑在已关闭的旧循环上 → "Event loop is closed"，导致一半工具探索崩溃、回退到
-        schema 兜底计划（前置没搭、全未触达）。共用一个循环即可根治。
-        """
-        if self._agent_loop is None or self._agent_loop.is_closed():
-            self._agent_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._agent_loop)
+        """在**进程级常驻**事件循环上跑智能体协程（见模块顶部 _AGENT_LOOP 说明，根治 P7）。"""
+        loop = _get_agent_loop()
+        asyncio.set_event_loop(loop)
         try:
-            return self._agent_loop.run_until_complete(coro)
+            return loop.run_until_complete(coro)
         finally:
             asyncio.set_event_loop(None)   # 交回干净状态，后续攻击阶段的 asyncio.run 不受影响
 
     def close(self):
-        """释放常驻事件循环（扫描结束时调用）。"""
-        if self._agent_loop is not None and not self._agent_loop.is_closed():
-            self._agent_loop.close()
-        self._agent_loop = None
+        """每服务扫完调用。**不**关闭进程级常驻的智能体事件循环（跨服务共用一个，见模块顶部）——
+        此前每服务关闭该循环，正是 P7 "Event loop is closed" 的根因。循环随进程退出自动回收。"""
+        return
 
     def _attack_tool(self, tool, plan, sink_params, timeout, poll_window, retries) -> list:
         """回放给定计划并对每个参数多通道判定。每次尝试独立事件循环，隔离上一工具可能残留的

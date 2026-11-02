@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from . import planner
@@ -35,9 +36,33 @@ Rules:
 - Keep it short; do not call unrelated tools."""
 
 
-def _goal(target_tool) -> str:
+def _sanitize_tool_names(tools) -> dict:
+    """把工具名合规化为 OpenAI function name（仅允许 [a-zA-Z0-9_-]，长度 ≤64），**就地改写**
+    每个 tool.name，返回 {合规名: 原始名}。
+
+    为什么安全：langchain-mcp-adapters 真正调用 MCP 时用的是闭包里捕获的原始 tool.name
+    （request.name → session.call_tool(request.name)），与 StructuredTool.name 无关；改 .name
+    只影响发给 LLM 的 function name。为什么必要：MCP/网关工具名常含点号（如网关前缀
+    io.github.X_Y-tool），而 OpenAI function name 不允许点号，带点号会被中转以 502 拒绝，
+    导致整个序列构建智能体瘫痪。通用处理任意非法字符，不针对任何具体服务。"""
+    mapping: dict = {}
+    for t in tools:
+        orig = t.name
+        san = re.sub(r"[^a-zA-Z0-9_-]", "_", orig)[:64] or "tool"
+        if san in mapping:                       # 合规化后撞名（如 a.b 与 a_b）→ 加后缀去重
+            base, i = san, 1
+            while san in mapping:
+                suf = f"_{i}"
+                san = base[: 64 - len(suf)] + suf
+                i += 1
+        mapping[san] = orig
+        t.name = san
+    return mapping
+
+
+def _goal(target_tool, display_name=None) -> str:
     req = [p.path for p in target_tool.params if p.required]
-    lines = [f"TARGET tool to make callable: {target_tool.name}",
+    lines = [f"TARGET tool to make callable: {display_name or target_tool.name}",
              f"description: {(target_tool.description or '')[:400]}",
              f"required parameters: {req or '(none)'}", "parameters:"]
     for p in target_tool.params:
@@ -127,10 +152,18 @@ async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
     # 持久会话：工具绑定到同一个 MCP 会话，set_working_dir 这类状态在整个探索过程中保留
     async with client.session("target") as session:
         tools = await load_mcp_tools(session)
+        # P1：MCP/网关工具名常含点号等 OpenAI function-name 非法字符（function name 仅允许
+        # [a-zA-Z0-9_-]，带点号会被中转 502 拒 → 序列构建全瘫）。在 LLM 边界合规化工具名，
+        # 调用轨迹再映射回真名；真正的 MCP 调用仍走原始名，不受影响。
+        name_map = _sanitize_tool_names(tools)   # {合规名: 原始名}
+        # 目标在 LLM 侧的显示名=其合规名；若 catalog 名与 adapter 名偶有分歧未命中映射，也退回到
+        # “合规化后的目标名”（而非带点号原名），确保递给 LLM 的始终是合法 function name。
+        target_disp = next((s for s, o in name_map.items() if o == target_tool.name), None) \
+            or (re.sub(r"[^a-zA-Z0-9_-]", "_", target_tool.name)[:64] or "tool")
         agent = create_react_agent(model, tools, prompt=SYSTEM)
         last = None
         try:
-            async for chunk in agent.astream({"messages": [("user", _goal(target_tool))]},
+            async for chunk in agent.astream({"messages": [("user", _goal(target_tool, target_disp))]},
                                              config={"recursion_limit": recursion},
                                              stream_mode="values"):
                 last = chunk
@@ -139,13 +172,26 @@ async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
 
     messages = (last or {}).get("messages", []) if isinstance(last, dict) else []
     calls = _extract_calls(messages)
+    calls = [(name_map.get(t, t), a, r, e) for (t, a, r, e) in calls]   # 合规名 → 真实工具名
     reporter.emit("agent.done", level="debug", tool=target_tool.name, calls=len(calls))
     if not calls:
         return planner.fallback_plan(target_tool)   # 智能体一步没调起来 → schema 兜底单步计划
     return _build_plan_from_calls(target_tool.name, calls, target_tool)
 
 
+_MODEL = None
+
+
 def _make_model(settings):
+    """返回进程内复用的 ChatOpenAI **单例**。
+
+    为什么单例：ChatOpenAI 的 httpx 异步客户端在首次使用时绑定到当时的事件循环（即常驻的
+    agent 事件循环，见 core._AGENT_LOOP），跨所有工具/服务复用同一个即可；若每工具新建一个
+    ChatOpenAI，会在该循环上累积大量 httpx 客户端（socket/FD）直到进程退出。单例一处创建、
+    一个客户端，既省资源又与常驻循环生命周期一致。"""
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
     from langchain_openai import ChatOpenAI
     from mcpfuzz.llm_config import API_KEY, BASE_URL, MODEL
     # BASE_URL 形如 .../v1/chat/completions；ChatOpenAI 需要 .../v1（会自己拼 /chat/completions）
@@ -156,8 +202,9 @@ def _make_model(settings):
             break
     timeout = getattr(settings, "timeout", None) or 60.0
     # 不设 temperature：该中转对 temperature 敏感；探测已确认缺省可用且支持工具调用
-    return ChatOpenAI(base_url=base, api_key=API_KEY, model=MODEL,
-                      timeout=max(timeout, 60.0), max_retries=1)
+    _MODEL = ChatOpenAI(base_url=base, api_key=API_KEY, model=MODEL,
+                        timeout=max(timeout, 60.0), max_retries=1)
+    return _MODEL
 
 
 async def build_sequence(url, headers, target_tool, catalog, settings, reporter, cache_dir=None) -> Plan:

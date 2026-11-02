@@ -170,9 +170,42 @@ async def _liveness_recheck(liveness, rounds: int = 3, interval: float = 1.0):
 
 
 def _shaped_args(base_args, prior, value):
-    """按参数结构契约摆放载荷：array 型参数把标量载荷包成单元素列表，避免'expected array'被 pre-sink 拒。"""
-    v = [value] if getattr(prior, "param_type", None) == "array" else value
+    """按参数的结构类型摆放载荷，避免被后端程序之前的结构校验（expected array / expected record）
+    直接挡下：
+    - array  → 包成单元素列表 [value]（数组元素非字符串的参数在 sink 推断阶段已判惰性，不会到这里）
+    - object → 包成单键自由记录 {<key>: value}，载荷作为值，覆盖 env/headers/params 这类映射型参数
+    标量型保持原样。定型对象/嵌套结构的更复杂塑形属载荷合成方案，暂不在此通用处理。"""
+    t = getattr(prior, "param_type", None)
+    if t == "array":
+        v = [value]
+    elif t == "object":
+        v = {"mcpfuzz": value}
+    else:
+        v = value
     return {**base_args, prior.param_path: v}
+
+
+def _blamed_param(err: str) -> str | None:
+    """从**输入校验类**报错里解析它点名的参数（如 'expected number, received string at maxResults'、
+    'Invalid UUID at investigationId'、'Invalid input: - appName: ...'），用于区分"目标参数本身被拒"
+    与"某兄弟参数填充值不合法把整个调用挡下"。通用解析，不针对任何服务。
+
+    保守起见只在确为输入校验错误时解析，且 'at <参数>' 只认**位于消息末尾**的那个（zod/MCP 校验
+    把出错字段路径放在末尾）——避免把 'at least'/'at runtime' 这类普通英文误当参数名。"""
+    if not re.search(
+        r"Invalid (?:arguments|input|option|UUID|string|email|enum)|expected .+? received"
+        r"|Too (?:small|big)|-32602", err, re.I):
+        return None
+    s = err.strip()
+    # zod/MCP 风格：出错字段路径在末尾 "... at <path>"（可能后跟 error=None 之类噪音）
+    m = re.search(r"\bat\s+([A-Za-z_][\w.]*(?:\[\d+\])?[\w.]*)\s*(?:error=\S+\s*)?$", s)
+    if m:
+        return m.group(1).split("[")[0].split(".")[0]
+    # nest/zod 列表风格："- <field>: <message>"（已在上面确认是校验错误的前提下）
+    m = re.search(r"[-•]\s*([A-Za-z_]\w*)\s*:\s*\S", s)
+    if m:
+        return m.group(1)
+    return None
 
 
 def _skipped_all(target, sink_params, note, reporter) -> list:
@@ -310,9 +343,14 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     # 参数的探针被 schema 全弹回时，会被 baseline 误翻成"疑似无漏洞"，掩盖"其实没测到"。
     if saw_ok or saw_program_error:
         return Finding(target, param, repr_cls, LIKELY_CLEAN, note="")
-    note = "本参数所有探针均被输入/schema 校验挡下（强类型/枚举/pattern 约束），未触达 sink"
+    note = "未触达 sink：本参数所有探针在到达后端程序前被输入校验/参数约束拒绝"
     if last_err:
-        note += f"；样例错误：{str(last_err)[:120]}"
+        err = str(last_err)
+        blamed = _blamed_param(err)
+        if blamed and blamed != str(param).split(".")[0]:
+            # 报错指向的是另一个参数 → 不是本参数打不进，而是某兄弟必填参数的填充值不合法
+            note += f"（实际被兄弟参数 '{blamed}' 的约束挡下，非本参数本身）"
+        note += f"；完整错误：{err[:400]}"
     return Finding(target, param, repr_cls, UNREACHED, note=note)
 
 
