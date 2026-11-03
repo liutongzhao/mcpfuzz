@@ -14,7 +14,7 @@ import re
 import time
 
 from mcpfuzz.driver import call_on
-from mcpfuzz.sink.types import AI, SSRF
+from mcpfuzz.sink.types import AI, PT, SSRF
 
 from .extract import extract_value
 from .types import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
@@ -349,6 +349,11 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     ev = {"type": "cross_tool", "reader_path": canary_path, "snippet": back[:160]}
                     return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "cross_tool")
             # 无配套读工具或未读到 → 不计入，继续
+        elif p.channel == "path_confine":
+            # 围栏差分：越界路径未被围栏拒绝 → 疑似路径穿越（写型无内容回显也适用）。弱证据 → 疑似有。
+            ev = _path_confinement_ev(res, text)
+            if ev:
+                weak.append((PT, p, ev))
         elif p.channel == "oob":
             oob_pending.append((p, args))
         if delay:
@@ -410,6 +415,35 @@ async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
         adds.append(lat - baseline)
     adds.sort()
     return adds[len(adds) // 2] >= p.delay_target * 0.6
+
+
+# 路径围栏差分——越界路径被“应用层围栏拒绝”的特征（命中=防御到位，不算漏洞）。
+# 刻意不含 OS 级 "permission denied"：那是工具已尝试越界写、被系统拦下，恰恰是“无围栏”的证据。
+_CONFINE_DENY = ("access denied", "denied to path", "outside", "must be within",
+                 "must be inside", "not allowed", "forbidden", "path traversal",
+                 "traversal is", "restricted to", "restricted path", "sandbox",
+                 "allowed director", "within the allowed", "escapes", "escape the",
+                 "invalid path", "illegal path", "not permitted", "beyond the",
+                 "越界", "非法路径", "不允许", "禁止", "目录之外", "越权")
+# 越界路径“被解析到沙箱外”的普通文件错误特征（命中=工具确实去沙箱外找了=无围栏，读型用）。
+_RESOLVED_OUT = ("no such file", "not found", "enoent", "cannot find",
+                 "does not exist", "no such directory", "不存在", "找不到")
+
+
+def _path_confinement_ev(res, text):
+    """路径围栏差分判定（治写型路径穿越无内容回显 + 读固定/非 passwd 文件的越界判定）：
+    越界路径若【未被应用层围栏拒绝】——成功处理（写落到越界路径 / 读到内容），或仅以普通文件
+    错误（ENOENT/not found）告终（说明工具确实把路径解析到沙箱外去找了）——则判“疑似未受路径限制”。
+    返回证据 dict 或 None（被围栏拒绝/无法判断）。只产弱证据（疑似有），确认留给内容回显 oracle。
+    通用判定，不针对任何服务。"""
+    blob = ((text or "") + " " + (res.get("exc") or "")).lower()
+    if any(m in blob for m in _CONFINE_DENY):
+        return None   # 应用层围栏拒绝 → 防御到位，不算
+    if (not res["is_error"]) or any(m in blob for m in _RESOLVED_OUT):
+        return {"type": "path_confinement", "channel": "differential",
+                "note": "越界路径未被围栏拒绝（成功处理或已解析到沙箱外），读/写疑似不受路径限制",
+                "snippet": (text or "")[:160]}
+    return None
 
 
 def _diff_hit(vuln_class, baseline_text, text):

