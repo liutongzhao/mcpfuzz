@@ -57,11 +57,17 @@ class PayloadSynthesizer:
             probe = self.oracle.new_probe("oob" if channel == "oob" else "inband", meta=meta, expect=None)
             # inband/cross_tool 的 embed 即 token；oob 的 embed 即完整回连 URL。
             # {TOKEN} → token（即 inband 的 embed）；{CALLBACK} → oob 的完整回连 URL。
-            value = value.replace("{CALLBACK}", probe.embed).replace("{TOKEN}", probe.token)
+            # {CALLBACK_HOST} → 去掉 scheme 的回连目标（host:port/token），token 仍在 path，
+            #   故带外命中依旧可归因；用于 SSRF 的占位感知形态（host 段注入/协议相对/@ 混淆/无 scheme）。
+            host_embed = probe.embed.split("://", 1)[-1] if channel == "oob" else probe.embed
+            value = (value.replace("{CALLBACK_HOST}", host_embed)
+                          .replace("{CALLBACK}", probe.embed)
+                          .replace("{TOKEN}", probe.token))
             # 期望签名也做占位符替换：求值型回显用 "{TOKEN}1681" 这种"执行后才出现"的形态，
             # 可区分"真执行"与"输入被原样回显"（后者只会出现 {TOKEN}$((41*41))）。
             if expect:
-                expect = [str(e).replace("{TOKEN}", probe.token).replace("{CALLBACK}", probe.embed)
+                expect = [str(e).replace("{TOKEN}", probe.token)
+                          .replace("{CALLBACK_HOST}", host_embed).replace("{CALLBACK}", probe.embed)
                           for e in expect]
             else:
                 expect = [probe.token]

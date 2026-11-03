@@ -12,7 +12,9 @@ from .types import AI, CI, CODE, PT, QI, SSRF, W_LOW, W_MED, Raise
 # (关键词正则, 注入类别)。命中参数名 → 中证据(W_MED)；仅命中描述 → 弱证据(W_LOW)。
 RULES = [
     (r"\b(path|file|dir|folder|filename|filepath|location|dest|destination|output|input)\b", PT),
-    (r"\b(url|uri|href|endpoint|host|hostname|webhook|callback|link|address|server|proxy|upstream)\b", SSRF),
+    (r"\b(url|uri|urls|href|endpoint|host|hostname|webhook|callback|link|address|server|proxy|upstream|"
+     r"target|source|src|site|page|domain|remote|feed|resource|origin|image|img|avatar|favicon|"
+     r"icon|thumbnail|screenshot|fetch|download|request|scrape|crawl|preview)\b", SSRF),
     (r"\b(cmd|command|exec|shell|bash|script|run)\b", CI),
     (r"\b(ref|arg|args|argument|flag|flags|option|options)\b", AI),
     (r"\b(query|sql|filter|search|statement|where|cypher|kql|dql|graphql)\b", QI),
@@ -20,10 +22,18 @@ RULES = [
 ]
 
 
+def _normalize(s: str) -> str:
+    """把 snake_case/kebab/点路径/camelCase 拆成空格分词，否则 \\b 词边界不在下划线处断开，
+    像 image_url / file_path / targetUrl 这类复合名会一个关键词都命不中（通用召回漏洞）。"""
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", s)   # camelCase → 空格
+    s = re.sub(r"[_\-./]+", " ", s)                  # 下划线/连字符/点/斜杠 → 空格
+    return s.lower()
+
+
 def rule_raises(param) -> list[Raise]:
     """返回该参数的规则抬升列表（每类最多一条，取最强）。"""
-    name = (param.path or "").lower()
-    desc = (param.description or "").lower()
+    name = _normalize(param.path or "")
+    desc = _normalize(param.description or "")
     best: dict[str, Raise] = {}
     for pat, cls in RULES:
         if re.search(pat, name):
