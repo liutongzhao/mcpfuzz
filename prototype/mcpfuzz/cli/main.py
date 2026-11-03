@@ -95,6 +95,12 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
                       help="网关空闲关闭超时（按需启动），用作首连冷启动预算（默认 300000）")
     g_gw.add_argument("--gateway-keep-online", dest="gateway_lifecycle", action="store_false", default=None,
                       help="检测后不停用后端（默认：检测时才 enable 上线、用完 disable 释放资源）")
+    g_gw.add_argument("--after-target-cmd", dest="after_target_cmd", default=None, metavar="CMD",
+                      help="每个目标扫完（后端已 disable）后执行的本地命令；在进程已停的安全时刻运行，"
+                           "不会打断冷启动。典型用途：清网关容器缓存防磁盘占满，例如 "
+                           "\"docker exec mcphub sh -c 'rm -rf /root/.npm/_cacache /app/.uv_cache /root/.cache/uv'\"")
+    g_gw.add_argument("--after-target-cmd-timeout", dest="after_target_cmd_timeout", type=float,
+                      default=None, metavar="SEC", help="上述收尾命令的超时秒数（默认 120）")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -187,6 +193,26 @@ def _confirm_or_exit(settings: Settings, n_targets: int) -> None:
         sys.exit("已取消。")
 
 
+def _run_after_target_cmd(settings, label: str) -> None:
+    """每个目标收尾后（后端已 disable）跑一次用户指定的清理命令。
+
+    放在"后端进程已停"的安全时刻：不会打断任何冷启动安装，且把磁盘峰值压到单个包的量级。
+    失败只告警、不影响检测流程（清理是运维辅助，不该让它中断批量跑）。"""
+    cmd = getattr(settings, "after_target_cmd", None)
+    if not cmd:
+        return
+    import subprocess
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                           timeout=getattr(settings, "after_target_cmd_timeout", 120.0) or 120.0)
+        if r.returncode != 0:
+            print(f"  [收尾命令] {label}: 退出码 {r.returncode}；{(r.stderr or r.stdout).strip()[:200]}")
+    except subprocess.TimeoutExpired:
+        print(f"  [收尾命令] {label}: 超时（已跳过，不影响检测）")
+    except Exception as e:
+        print(f"  [收尾命令] {label}: 执行失败 {str(e)[:150]}（已跳过）")
+
+
 def _run_one(target_arg, name, settings, console, extra_headers, dry_run_override=None):
     """建运行目录、挂日志 sink、跑一个目标；返回 (run_dir, findings)，异常原样抛出。"""
     run_dir = make_run_dir(Path(settings.out_dir), settings.run_name, name or target_arg)
@@ -244,6 +270,8 @@ def cmd_scan(args) -> int:
                 raise
         finally:
             console.stop()
+            # 后端已在 scan_target 的 finally 里 disable；此刻清理不会打断任何冷启动
+            _run_after_target_cmd(settings, label)
 
     if len(targets) > 1:
         summary_path = write_batch_summary(Path(settings.out_dir), results)
