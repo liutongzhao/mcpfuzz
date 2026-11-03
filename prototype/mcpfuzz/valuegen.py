@@ -11,9 +11,25 @@ P4 只多一步"在合法骨架里嵌载荷"。全部由参数自己在 JSON Sch
 from __future__ import annotations
 
 import re
+import secrets
 
 _PATH_KEYS = ("path", "file", "dir", "folder", "location", "dest", "filepath")
 _URL_KEYS = ("url", "uri", "endpoint", "link", "href")
+# 目录型线索：命中则填"唯一的新目录路径"（让工具自己 makedirs），否则按文件填
+_DIR_KEYS = ("dir", "folder", "directory")
+
+
+def _path_filler(param) -> str:
+    """路径型参数的良性填充值。两条铁律：
+    1) 每次唯一（带随机 token）——绝不用跨工具/跨运行共享的写死常量，否则会出现
+       "A 工具把它写成文件、B 工具又当目录用" 的互踩（见 output_dir 踩到 consciousness 残留）。
+    2) 按原型区分目录/文件——目录型给不存在的唯一目录(工具自己建)，文件型给唯一文件路径。
+    代价：填充值不再逐参数确定(引入随机)，但这是避免残留污染的必要取舍。"""
+    name = (param.path or "").lower()
+    desc = (getattr(param, "description", "") or "").lower()
+    is_dir = any(k in name for k in _DIR_KEYS) or "directory" in desc or "folder" in desc
+    tok = secrets.token_hex(4)
+    return f"/tmp/mcpfuzz_d{tok}" if is_dir else f"/tmp/mcpfuzz_f{tok}.bin"
 
 # format 关键字 → 一个合法良性值（JSON Schema 标准词汇表，对所有服务一视同仁）
 _FORMAT_VALUES = {
@@ -112,7 +128,7 @@ def benign_value(param):
 
     # 权威值：路径型相对默认值规避（保留原启发），否则 default/example/enum 直接用（已合法，不 _enforce）
     if pathlike and getattr(param, "default", None) in (None, ".", "", "./", "cwd"):
-        return "/tmp/mcpfuzz_probe"
+        return _path_filler(param)
     if getattr(param, "default", None) is not None:
         return param.default
     if getattr(param, "example", None) is not None:
@@ -133,7 +149,7 @@ def benign_value(param):
     # 名字启发（保留原 _fallback_literal 行为）
     if stringy:
         if pathlike:
-            return "/tmp/mcpfuzz_probe"
+            return _path_filler(param)
         if any(k in name for k in _URL_KEYS):
             return "http://example.com/"
 
