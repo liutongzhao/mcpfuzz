@@ -8,6 +8,7 @@
 """
 import json
 import os
+import socket
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +16,8 @@ from urllib.parse import urlparse, parse_qs
 
 PORT = int(os.environ.get("OOB_PORT", "9100"))
 LOG = os.environ.get("OOB_LOG", "/data/hits.jsonl")
+# 每连接 socket 超时（秒）：挂起/龟速的回连不再永久占用线程，到点自动断开、线程回收。
+REQUEST_TIMEOUT = float(os.environ.get("OOB_REQUEST_TIMEOUT", "15"))
 
 _lock = threading.Lock()
 _hits = {}  # token -> [record, ...]
@@ -32,6 +35,17 @@ def record(token, detail):
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = REQUEST_TIMEOUT   # BaseHTTPRequestHandler 读请求行的超时
+
+    def setup(self):
+        super().setup()
+        # 给整条连接的读写都加超时：慢客户端在 rfile/wfile 上触发 socket.timeout，
+        # 线程随即结束，不会把一个挂起连接攥到进程退出。
+        try:
+            self.connection.settimeout(REQUEST_TIMEOUT)
+        except OSError:
+            pass
+
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
@@ -76,6 +90,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass  # 静默,命中已写 JSONL
+
+    def log_error(self, *a):
+        pass  # 慢客户端超时/断连会触发 error 日志,大规模下噪声大且无意义,静默
+
+    def handle_one_request(self):
+        # 超时/断连只让这一个连接的线程安静结束,不打印 traceback、不影响其它连接
+        try:
+            super().handle_one_request()
+        except (OSError, socket.timeout):
+            self.close_connection = True
 
 
 if __name__ == "__main__":

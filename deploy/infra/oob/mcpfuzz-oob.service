@@ -1,0 +1,25 @@
+[Unit]
+# OOB 回连采集服务（samanhappy 无关，纯 stdlib collector.py）。
+# 作用：进程崩溃/机器重启后自动拉起，保证大规模扫描期间命令注入/SSRF 的确认通道不中断。
+# 命中持久化在 OOB_LOG 指向的 JSONL，重启不丢历史证据。
+Description=mcpfuzz OOB callback collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+# 按实际部署路径调整：
+WorkingDirectory=/home/ubuntu/mcpfuzz/prototype/deploy/infra/oob
+Environment=OOB_PORT=9100
+Environment=OOB_LOG=/home/ubuntu/oob_data/hits.jsonl
+Environment=OOB_REQUEST_TIMEOUT=15
+ExecStart=/usr/bin/python3 /home/ubuntu/mcpfuzz/prototype/deploy/infra/oob/collector.py
+# 稳定性：崩了永远自动重启，节流 2s 防疯狂重启刷屏
+Restart=always
+RestartSec=2
+# 可选资源护栏
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

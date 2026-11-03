@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import time
 import sys
 from dataclasses import asdict, fields
 from pathlib import Path
@@ -117,6 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--header", action="append", default=[], metavar="'K: V'",
                         help="追加 HTTP 头，如鉴权（可重复）")
     p_scan.add_argument("--fail-fast", action="store_true", help="批量时遇到失败立即中断（默认跳过继续）")
+    p_scan.add_argument("--resume", action="store_true",
+                        help="断点续跑：跳过本批次 runs/<NAME>/_done.jsonl 里已完成的目标（崩溃/中断后重启直接接着跑）")
     p_scan.add_argument("--dry-run", action="store_true", default=None,
                         help="等价于 recon：只预览攻击面，不发载荷")
     _add_common_scan_args(p_scan)
@@ -238,40 +242,93 @@ def _run_one(target_arg, name, settings, console, extra_headers, dry_run_overrid
         jsonl_sink.close()
 
 
+def _target_key(target_arg: str, name: str | None) -> str:
+    """断点账本里标识一个目标的稳定键：URL（或配置文件路径）+ 可选 server 名。"""
+    return f"{target_arg}||{name or ''}"
+
+
+def _done_ledger_path(out_dir: str) -> Path:
+    return Path(out_dir) / "_done.jsonl"
+
+
+def _load_done_ledger(out_dir: str):
+    """读断点账本，返回 (done_keys:set, prior_results:list)。文件不存在/半行损坏都安全降级。"""
+    path = _done_ledger_path(out_dir)
+    done, prior = set(), []
+    if not path.exists():
+        return done, prior
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)   # 容忍崩溃时写了半行：解析失败就跳过该行
+        except json.JSONDecodeError:
+            continue
+        key = rec.get("_key")
+        if key and key not in done:
+            done.add(key)
+            if rec.get("result"):
+                prior.append(rec["result"])
+    return done, prior
+
+
+def _append_done_ledger(out_dir: str, key: str, result: dict) -> None:
+    """每完成一个目标立即追加一行并 flush+fsync 落盘——崩溃后账本里已完成的部分不丢。"""
+    path = _done_ledger_path(out_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"_key": key, "time": time.strftime("%Y-%m-%d %H:%M:%S"), "result": result}
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
 def cmd_scan(args) -> int:
     settings = build_settings(args)
     batch_name = getattr(args, "batch_name", None)
     if batch_name:
-        # 批次名：所有结果（每目标子目录 + batch_summary + latest）统一归到 runs/<批次名>/ 下
+        # 批次名：所有结果（每目标子目录 + batch_summary + latest + 断点账本）统一归到 runs/<批次名>/ 下
         settings.out_dir = str(Path(settings.out_dir) / slugify(batch_name))
     targets = _resolve_targets(args)
     extra_headers = _parse_headers(args.header)
-    _confirm_or_exit(settings, len(targets))
 
+    # 断点续跑：从账本载入已完成目标，过滤掉，剩余才扫；prior_results 让最终汇总仍完整
+    resume = bool(getattr(args, "resume", False))
+    done_keys, results = (_load_done_ledger(settings.out_dir) if resume else (set(), []))
+    pending = [(t, n) for (t, n) in targets if _target_key(t, n) not in done_keys]
+    skipped = len(targets) - len(pending)
+
+    _confirm_or_exit(settings, len(pending))
+    if resume and skipped:
+        print(f"断点续跑：账本已完成 {skipped} 个，跳过；本次剩余 {len(pending)} 个。")
+
+    from mcpfuzz.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED)
     console = build_console(settings.format, settings.verbose or 0, bool(settings.quiet))
-    results = []
-    for target_arg, name in targets:
+    for target_arg, name in pending:
         label = name or target_arg
+        key = _target_key(target_arg, name)
         console.start(label)
         try:
             run_dir, findings = _run_one(target_arg, name, settings, console, extra_headers)
-            from mcpfuzz.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED,
-                                              UNREACHED)
-            results.append({"target": label, "run_dir": str(run_dir),
-                           "confirmed": sum(f.status == CONFIRMED for f in findings),
-                           "suspected": sum(f.status == SUSPECTED for f in findings),
-                           "clean": sum(f.status == LIKELY_CLEAN for f in findings),
-                           "unreached": sum(f.status == UNREACHED for f in findings),
-                           "skipped": sum(f.status == SKIPPED for f in findings)})
+            result = {"target": label, "run_dir": str(run_dir),
+                      "confirmed": sum(f.status == CONFIRMED for f in findings),
+                      "suspected": sum(f.status == SUSPECTED for f in findings),
+                      "clean": sum(f.status == LIKELY_CLEAN for f in findings),
+                      "unreached": sum(f.status == UNREACHED for f in findings),
+                      "skipped": sum(f.status == SKIPPED for f in findings)}
         except Exception as e:
-            results.append({"target": label, "error": str(e)[:300]})
-            if args.fail_fast:
-                console.stop()
-                raise
+            result = {"target": label, "error": str(e)[:300]}
         finally:
             console.stop()
             # 后端已在 scan_target 的 finally 里 disable；此刻清理不会打断任何冷启动
             _run_after_target_cmd(settings, label)
+        # 账本在收尾（含清理）之后才落：重启续跑时不会漏掉某个目标的清理。崩在这之前→该目标重跑一次（幂等可接受）
+        results.append(result)
+        _append_done_ledger(settings.out_dir, key, result)
+        if "error" in result and args.fail_fast:
+            print(f"fail-fast：{label} 失败，中断。已完成的在账本里，可 --resume 续跑。")
+            break
 
     if len(targets) > 1:
         summary_path = write_batch_summary(Path(settings.out_dir), results)
