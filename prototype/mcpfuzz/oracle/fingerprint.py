@@ -12,8 +12,9 @@ _PATTERNS = {
     CI: [
         r"/bin/(?:sh|bash)\b",
         r"\bcommand not found\b",          # 不用裸 "not found"：会撞 "File not found"（文件不存在，非 shell）
-        r"\bsyntax error near\b",
-        r"\bunexpected (?:token|EOF|end of)\b",
+        r"\bsyntax error near\b",            # bash: "syntax error near unexpected token"
+        r"\bunexpected (?:EOF|end of file)\b",  # shell 专属;不含裸 "unexpected token"——JS/JSON 的
+                                             # "Unexpected token '<'" 等解析错误与 shell 无关,会误判
         r"^sh:\s",
     ],
     AI: [

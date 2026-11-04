@@ -330,18 +330,12 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
                 if oracle.fingerprint(text, p.vuln_class):
                     return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
-            # SSRF 信任边界：打**内网/元数据目标**且服务端**真取回了非空正文**→ 已越过信任边界。
-            # fail-closed 三重门：① 无错误(is_error=False)；② 取回内容非空（空壳/只报 ok 的工具不算——
-            # 它们对任何目标都空，不能证明够到内网）；③ 内容不是连接失败消息（ECONNREFUSED/getaddrinfo
-            # 等由 SSRF 错误指纹单独处理）；④ 内容不是把我们发的 URL 原样回显。被围栏拒绝(is_error=True)
-            # 自然不计。元数据体签名命中走上面的 confirmed。
-            if (p.vuln_class == SSRF and getattr(p, "target_scope", "public") == "internal"
-                    and not res["is_error"] and text.strip()
-                    and not oracle.fingerprint(text, SSRF)
-                    and p.value not in text):
-                weak.append((SSRF, p, {"type": "ssrf_internal_reach", "channel": "inband",
-                                       "note": "服务端真取回内网/元数据目标的非空正文，越过信任边界，疑似 SSRF",
-                                       "target": p.value, "snippet": text[:160]}))
+            # SSRF 信任边界：只认与"发起 fetch"有因果关系的证据——
+            #   · 正文命中云元数据特征串（ami-id/instance-id 等）→ 走上面 observe_inband 的 confirmed；
+            #   · 对内网目标出现连接失败指纹（ECONNREFUSED/超时/getaddrinfo 等）→ 由上面的 error_fingerprint
+            #     归入 weak（疑似），证明服务端确实去连了内网。
+            # 不再用"返回了非空正文"反推"够到了内网"：返回的正文是工具的正常业务输出，与有无 fetch
+            # 无因果（该参数常根本不发请求、服务端照常返回结果或业务报错），此推理不成立，故移除。
         elif p.channel == "timing":
             if baseline_latency is not None and (latency - baseline_latency) >= p.delay_target * 0.6:
                 if await _confirm_timing(session, target, args, p, baseline_latency):
@@ -349,7 +343,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                           "observed": round(latency, 3), "target": p.delay_target}
                     return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "timing")
         elif p.channel == "differential":
-            ev = _diff_hit(p.vuln_class, baseline_text, text)
+            ev = _diff_hit(p.vuln_class, baseline_text, text, p.value)
             if ev:
                 return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "differential")
         elif p.channel == "cross_tool":
@@ -365,21 +359,29 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "cross_tool")
             # 无配套读工具或未读到 → 不计入，继续
         elif p.channel == "path_confine":
-            # fail-closed 写型路径穿越：越界路径（含唯一 canary 名）被写后，用独立读回器读该落地
-            # 路径。读到正文 = canary 真落到沙箱外 = 确认不受路径限制；读不到（被围栏拦→read_back
-            # 对 is_error 返回空 / 无读回器 / 读型工具本就没写东西）→ 不产结论。
-            # 全程只认“读回到内容”这一正向实据，不解析服务端拒绝措辞（特判且不可靠）。
+            # fail-closed 写型路径穿越：用该 MCP 自己的读回器做"目标路径 vs 未写入对照路径"自对照差分。
+            # 读两条同形路径——我们刚写入的越界落地路径 landing，与一条从未写过的对照路径 control。
+            #   · 真写进去了：读 landing 得文件正文、读 control 得"不存在"（或读失败）→ 两者不同 → 确认。
+            #   · 什么都没写（读型工具/被围栏拦）：两者都是"不存在"模板 → 去掉回显的路径串后一致 → 不确认。
+            # 只认"两条路径读回结果不同"这一正向差分，不检非空、不解析任何拒绝措辞（避免把"文件不存在"
+            # 提示误当成写入成功）。
             tok = getattr(p.probe, "token", None) if p.probe else None
             if read_back is not None and tok:
-                landing = "/tmp/" + tok + (".txt" if p.value.endswith(".txt") else "")
+                ext = ".txt" if p.value.endswith(".txt") else ""
+                landing = "/tmp/" + tok + ext
+                control = "/tmp/" + tok + "_ctl" + ext   # 同形但从未写入的对照路径
                 try:
                     back = await read_back(landing)
                 except Exception:
                     back = ""
-                if back:
+                try:
+                    back_ctl = await read_back(control)
+                except Exception:
+                    back_ctl = ""
+                if back and _strip_paths(back, (landing, control)) != _strip_paths(back_ctl, (landing, control)):
                     ev = {"type": "path_traversal_write", "channel": "cross_tool",
-                          "landing": landing, "snippet": back[:160],
-                          "note": "越界路径写入后被独立读回，canary 真实落地，确认不受路径限制"}
+                          "landing": landing, "control": control, "snippet": back[:160],
+                          "note": "越界写入路径读回内容与未写入对照路径不同，canary 真实落地，确认不受路径限制"}
                     return _confirmed(target, param, PT, p, ev, seq_trace, args, "cross_tool")
         elif p.channel == "oob":
             oob_pending.append((p, args))
@@ -445,7 +447,15 @@ async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
     return adds[len(adds) // 2] >= p.delay_target * 0.6
 
 
-def _diff_hit(vuln_class, baseline_text, text):
+def _strip_paths(s, paths):
+    """去掉文本里回显的路径串后 strip，用于路径穿越自对照差分的"路径回显无关"比较。"""
+    s = s or ""
+    for pth in paths:
+        s = s.replace(pth, "")
+    return s.strip()
+
+
+def _diff_hit(vuln_class, baseline_text, text, payload=None):
     """差分：参数注入的 --version/--help 若让响应出现版本/用法/getopt 报错特征（基线没有）→ 命中。"""
     if vuln_class != AI or not text or text == baseline_text:
         return None
@@ -453,8 +463,14 @@ def _diff_hit(vuln_class, baseline_text, text):
         return None   # 应用层输入/枚举校验（非 argv 注入），不算
     m = _AI_MARKERS.search(text)
     if m and (not baseline_text or m.group(0).lower() not in baseline_text.lower()):
+        marker = m.group(0)
+        # 回显感知（与 inband 同一原则）：匹配到的 marker 若本就是所发载荷的子串，说明它是载荷被
+        # 原样回显（如载荷 "--usage" 让报错里出现 "usage:"），非参数解析器的真实输出 → 不算证据。
+        core = marker.lower().strip(":").lstrip("-")
+        if payload and core and core in str(payload).lower():
+            return None
         i = m.start()
-        return {"type": "differential", "marker": m.group(0),
+        return {"type": "differential", "marker": marker,
                 "snippet": text[max(0, i - 20): i + 60]}
     return None
 
