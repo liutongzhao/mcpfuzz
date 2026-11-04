@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from mcpfuzz.driver import call_on, open_session, ping
+from mcpfuzz.llm_failover import AllModelsUnavailable
 from mcpfuzz.payload import PayloadSynthesizer
 
 from . import agent, planner
@@ -115,6 +116,8 @@ class Orchestrator:
                 return self._agent_run(agent.build_sequence(
                     self.url, self.headers, tool, self.catalog, self.settings,
                     self.reporter, cache_dir=agent_cache))
+            except AllModelsUnavailable:
+                raise   # 所有模型都挂了：冒泡到批量层暂停，不再退而求其次
             except Exception as e:
                 self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
         if want_llm_plan:
@@ -194,6 +197,10 @@ class Orchestrator:
 
                 async def read_back(path, _rt=rtool, _rp=rpath, _ro=rother):
                     res = await call_on(session, _rt, {**_ro, _rp: path})
+                    # 读工具本身报错（如被围栏拒绝 "path escapes ALLOWED_ROOTS"）→ 视为“读不到”，
+                    # 返回空。只有真正成功读回的正文才算 canary 落地证据（fail-closed，不解析错误措辞）。
+                    if res.get("is_error"):
+                        return ""
                     return res.get("text", "")
 
             return await run_tool(session, plan, sink_params, self.synth, self.oracle,

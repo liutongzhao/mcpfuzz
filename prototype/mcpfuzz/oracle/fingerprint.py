@@ -23,11 +23,10 @@ _PATTERNS = {
         r"\bunexpected argument\b",
         # 不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误判
     ],
-    PT: [
-        r"\bENOENT\b",
-        r"\bNo such file or directory\b.*/(?:etc|root|home|var|usr)/",
-        r"\b(?:EACCES|permission denied)\b.*/(?:etc|root)/",
-    ],
+    # 路径穿越**不**走错误指纹弱证据：响应里出现 ENOENT / "No such file" / permission denied
+    # 只证明"服务端拿这个值去开了个文件/路径但失败了"，**不**证明越界访问真的发生（载荷常被
+    # 喷进非路径参数也会产生这类报错）。PT 一律 fail-closed：仅凭正向实据确认——
+    # inband 读回越界文件内容签名（passwd/key），或写后回读落地 canary（见 executor）。
     SSRF: [
         r"\b(?:ECONNREFUSED|connection refused)\b",
         r"\b(?:ETIMEDOUT|connection timed out)\b",

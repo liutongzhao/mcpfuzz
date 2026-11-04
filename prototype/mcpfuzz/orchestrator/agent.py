@@ -17,6 +17,7 @@ import json
 import re
 from pathlib import Path
 
+from mcpfuzz.llm_failover import AllModelsUnavailable
 from . import planner
 from .types import Plan, Step
 
@@ -199,30 +200,35 @@ async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
 
 
 _MODEL = None
+_MODEL_PROVIDER = None   # 记录 _MODEL 当前绑的 provider 名；故障切换后 provider 变了则重建
 
 
 def _make_model(settings):
-    """返回进程内复用的 ChatOpenAI **单例**。
+    """返回进程内复用的 ChatOpenAI 单例，**按 llm_failover 的当前 provider 构建**。
 
     为什么单例：ChatOpenAI 的 httpx 异步客户端在首次使用时绑定到当时的事件循环（即常驻的
     agent 事件循环，见 core._AGENT_LOOP），跨所有工具/服务复用同一个即可；若每工具新建一个
-    ChatOpenAI，会在该循环上累积大量 httpx 客户端（socket/FD）直到进程退出。单例一处创建、
-    一个客户端，既省资源又与常驻循环生命周期一致。"""
-    global _MODEL
-    if _MODEL is not None:
+    ChatOpenAI，会在该循环上累积大量 httpx 客户端（socket/FD）直到进程退出。
+
+    多模型故障切换：当 curl 路径（sink/规划兜底）切到了备用 provider（黏性游标前移），这里会
+    发现 provider 变了并**重建**单例指向新模型，使多步智能体随之切换，不再打死的那个。"""
+    global _MODEL, _MODEL_PROVIDER
+    from mcpfuzz import llm_failover
+    prov = llm_failover.current_provider()
+    if _MODEL is not None and _MODEL_PROVIDER == prov["name"]:
         return _MODEL
     from langchain_openai import ChatOpenAI
-    from mcpfuzz.llm_config import API_KEY, BASE_URL, MODEL
-    # BASE_URL 形如 .../v1/chat/completions；ChatOpenAI 需要 .../v1（会自己拼 /chat/completions）
-    base = BASE_URL
+    # base_url 形如 .../v1/chat/completions；ChatOpenAI 需要 .../v1（会自己拼 /chat/completions）
+    base = prov["base_url"]
     for suf in ("/chat/completions", "/chat/completions/"):
         if base.endswith(suf):
             base = base[: -len(suf)]
             break
     timeout = getattr(settings, "timeout", None) or 60.0
     # 不设 temperature：该中转对 temperature 敏感；探测已确认缺省可用且支持工具调用
-    _MODEL = ChatOpenAI(base_url=base, api_key=API_KEY, model=MODEL,
+    _MODEL = ChatOpenAI(base_url=base, api_key=prov["api_key"], model=prov["model"],
                         timeout=max(timeout, 60.0), max_retries=1)
+    _MODEL_PROVIDER = prov["name"]
     return _MODEL
 
 
@@ -235,12 +241,17 @@ async def build_sequence(url, headers, target_tool, catalog, settings, reporter,
 
     try:
         plan = await _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
+    except AllModelsUnavailable:
+        raise   # 所有模型都挂了：不降级成 schema 兜底，冒泡让批量层暂停检测
     except Exception as e:
         reporter.emit("agent.error", level="debug", tool=target_tool.name, error=str(e)[:200])
-        # 回退：大模型一次性规划（或 schema 兜底）
+        # 回退：大模型一次性规划（planner 走 llm_failover，会自动切备用并把游标移到可用模型，
+        # 下一个工具的智能体即随之切换）；若连规划也全模型失败 → AllModelsUnavailable 冒泡暂停。
         try:
             plan = planner.plan(target_tool, catalog) if (settings is None or settings.llm_plan) \
                 else planner.fallback_plan(target_tool)
+        except AllModelsUnavailable:
+            raise
         except Exception:
             plan = planner.fallback_plan(target_tool)
 

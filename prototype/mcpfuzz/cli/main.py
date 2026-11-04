@@ -18,6 +18,7 @@ from pathlib import Path
 
 from mcpfuzz.config import Settings, build_settings
 from mcpfuzz.report import render_markdown
+from mcpfuzz.llm_failover import AllModelsUnavailable
 from mcpfuzz.run import make_run_dir, read_batch_file, scan_target, slugify, write_batch_summary
 from mcpfuzz.targetcfg import resolve_target
 
@@ -309,6 +310,7 @@ def cmd_scan(args) -> int:
         label = name or target_arg
         key = _target_key(target_arg, name)
         console.start(label)
+        paused = None   # 置为暂停原因则本目标不计账本、循环结束后 break
         try:
             run_dir, findings = _run_one(target_arg, name, settings, console, extra_headers)
             result = {"target": label, "run_dir": str(run_dir),
@@ -317,12 +319,19 @@ def cmd_scan(args) -> int:
                       "clean": sum(f.status == LIKELY_CLEAN for f in findings),
                       "unreached": sum(f.status == UNREACHED for f in findings),
                       "skipped": sum(f.status == SKIPPED for f in findings)}
+        except AllModelsUnavailable as e:
+            # 所有大模型都不可用：**暂停**整批（不把当前目标记入账本，恢复后 --resume 从它续跑）。
+            paused = str(e)[:160]
         except Exception as e:
             result = {"target": label, "error": str(e)[:300]}
         finally:
             console.stop()
             # 后端已在 scan_target 的 finally 里 disable；此刻清理不会打断任何冷启动
             _run_after_target_cmd(settings, label)
+        if paused is not None:
+            print(f"\n⏸  所有大模型均不可用，已暂停检测（{paused}）。")
+            print(f"   当前目标 {label} 未计入账本；模型恢复后用 --resume 从这里续跑即可。")
+            break
         # 账本在收尾（含清理）之后才落：重启续跑时不会漏掉某个目标的清理。崩在这之前→该目标重跑一次（幂等可接受）
         results.append(result)
         _append_done_ledger(settings.out_dir, key, result)

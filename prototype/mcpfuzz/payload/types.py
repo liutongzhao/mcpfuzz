@@ -23,3 +23,6 @@ class ProbeSpec:
     reflection_safe: bool = True   # inband 命中是否"反射免疫"：期望签名不可能由输入被原样回显产生。
     #   False（如 AI 未知选项，token 就在输入里）→ 命中须有对应错误指纹佐证才算确认，否则仅弱证据。
     placement: str = "value"   # object 型参数的载荷放置位：value（放映射的值）/ key（放映射的键）
+    target_scope: str = "public"   # SSRF 载荷打的目标类别：public（公网/我们的回连collector）/
+    #   internal（内网/环回/云元数据）。信任边界判定据此：只有 internal 目标被够到才算 SSRF 证据；
+    #   公网出网是 URL 抓取类工具的本职功能，不单独构成漏洞。
