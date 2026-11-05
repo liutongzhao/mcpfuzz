@@ -41,10 +41,14 @@ def make_run_dir(out_dir: Path, run_name: str | None, server_hint: str) -> Path:
 
 
 def _param_sink_dict(p) -> dict:
-    return {"tool": p.tool, "param_path": p.param_path, "param_type": p.param_type,
-            "inert": p.inert, "inert_reason": p.inert_reason,
-            "class_weights": {c: round(w, 3) for c, w in p.class_weights.items()},
-            "provenance": p.provenance}
+    d = {"tool": p.tool, "param_path": p.param_path, "param_type": p.param_type,
+         "inert": p.inert, "inert_reason": p.inert_reason,
+         "class_weights": {c: round(w, 3) for c, w in p.class_weights.items()},
+         "provenance": p.provenance}
+    if getattr(p, "declared_domain", ""):
+        d["declared_domain"] = p.declared_domain
+        d["domain_evidence"] = p.domain_evidence
+    return d
 
 
 def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, reporter,

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-from mcpfuzz.sink.types import AI, CI, PT, SSRF
+from mcpfuzz.sink.types import AI, CI, CODE, PT, SSRF
 
 _PATTERNS = {
     CI: [
@@ -39,6 +39,19 @@ _PATTERNS = {
         r"\bnodename nor servname\b",
         r"\bfailed to (?:resolve|establish a? ?new connection)\b",
         r"\bMax retries exceeded with url\b",             # requests 库打到我们 host 的典型报错
+    ],
+    # 代码注入**只作弱证据**（→ 疑似，不单独定案；确认靠 L2 越域回显）。
+    # 取各解释器/模板引擎抵达并报错的高信号 traceback，通用、不针对任何服务器。
+    # 刻意不收 "TypeError"/"Unexpected token" 等过泛词（JSON/JS 解析也产生，会误判）。
+    CODE: [
+        r"Traceback \(most recent call last\)",            # Python 解释器栈
+        r"\bSyntaxError\b", r"\bNameError\b",               # Python eval/exec
+        r"\binvalid syntax\b",
+        r"\bunexpected EOF while parsing\b",
+        r"\bSympifyError\b", r"\bcould not parse\b",        # SymPy parse_expr
+        r"\bParseException\b",
+        r"\bjinja2\.exceptions\.", r"\bTemplateSyntaxError\b",  # Jinja2/模板引擎
+        r"\bat new Script\b", r"\bevalmachine\b",           # Node vm/eval 栈帧
     ],
 }
 

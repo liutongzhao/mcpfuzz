@@ -20,8 +20,9 @@ CODE = "code_injection"
 NONE = "none"
 SINK_TYPES = {CI, AI, PT, SSRF, QI, CODE, NONE}
 
-# 本阶段启用的类别（阶段范围配置，≠ 对单参数的闸门；QI/CODE 留第二阶段）。
-PHASE1_CLASSES = (CI, AI, PT, SSRF)
+# 本阶段启用的类别（阶段范围配置，≠ 对单参数的闸门；QI 仍留后续阶段）。
+# CODE（代码注入 CWE-94）已启用：L1 求值回显复用招牌逻辑，净新增 L2 越域探针 + declared_domain + 意图闸门。
+PHASE1_CLASSES = (CI, AI, PT, SSRF, CODE)
 
 # 权重档位。地板保证非零（任一启用类别都会被下游分到最小载荷预算）；抬升只增不减，合并取 max。
 FLOOR = 0.1      # 地板：任何非惰性参数的每个启用类别都 ≥ 此值
@@ -56,6 +57,10 @@ class ParamSinkPrior:
     inert_reason: str = ""
     provenance: dict = field(default_factory=dict)      # {class: [证据串, ...]}
     param: object = None                                 # 原始 catalog.Param（携带 pattern/format/长度等约束，供约束感知载荷用）
+    # 代码注入专用：LLM 概括的"该参数声明的计算域"+引文（强制引用描述/schema 原话，引不出则留空）。
+    # 当前口径 B：只作附注供人工判定 dangerous-by-design，**不**参与工具的自动裁决（见 docs/代码注入检测设计.md §5）。
+    declared_domain: str = ""
+    domain_evidence: str = ""
 
     def ranked_classes(self) -> list[str]:
         """按权重从高到低返回启用类别（供下游排序分预算）。"""

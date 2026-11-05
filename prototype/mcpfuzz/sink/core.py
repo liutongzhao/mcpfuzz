@@ -89,6 +89,12 @@ class SinkInferencer:
                           for x in tl.get(p.path, []) if x.get("type") in self.enabled]
                 weights, prov = _combine(self.enabled, rule_rs, llm_rs)
                 ps = ParamSinkPrior(tool.name, p.path, p.type, weights, False, "", prov, param=p)
+                # 代码注入声明域（若 LLM 对该参数标了 code_injection 并给出 declared_domain）：
+                # 口径 B，仅作附注供人工判定 dangerous-by-design，不参与自动裁决。
+                for x in tl.get(p.path, []):
+                    if x.get("type") == "code_injection":
+                        ps.declared_domain = x.get("declared_domain", "") or ps.declared_domain
+                        ps.domain_evidence = x.get("domain_evidence", "") or ps.domain_evidence
                 out.append(ps)
                 if prov:
                     hot += 1

@@ -78,4 +78,5 @@ class PayloadSynthesizer:
             control=tpl.get("control"), probe=probe, expect=(expect or []),
             delay_target=tpl.get("delay_target", 0.0), technique=tpl.get("technique", ""),
             reflection_safe=tpl.get("reflection_safe", True),
-            target_scope=tpl.get("target_scope", "public"))
+            target_scope=tpl.get("target_scope", "public"),
+            tier=tpl.get("tier", ""))

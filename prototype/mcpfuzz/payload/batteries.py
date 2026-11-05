@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
-from mcpfuzz.sink.types import AI, CI, PT, SSRF
+import secrets
+
+from mcpfuzz.sink.types import AI, CI, CODE, PT, SSRF
 
 # ---------------- 命令注入 ----------------
 # shell 语境变体：{c} 为要注入的命令。
@@ -195,7 +197,58 @@ def _ssrf_battery() -> list[dict]:
     return out
 
 
-_BATTERIES = {CI: _ci_battery, AI: _ai_battery, PT: _pt_battery, SSRF: _ssrf_battery}
+# ---------------- 代码注入（CWE-94：进程内语言解释器 / 模板引擎 / eval） ----------------
+# 两步判定（见 docs/代码注入检测设计.md）：
+#   L1 求值回显——裸算术 {A}*{B} 回显其积（积不在载荷里 → 反射免疫）：证明"发生了求值"。
+#     但裸算术可能只是受限计算器的本职功能，单独**仅判疑似**（executor 意图闸门）。
+#   L2 越域——输入被当"代码/模板"而非"一个数"处理：引擎须识别模板 delimiter（{{}}/${}/<%%>/#{}）
+#     或真的调函数（ord/charCodeAt/length）才会回显预期结果，纯算术解析器（SymPy 等）做不到 →
+#     证明是"代码"而非"算数" → **确认**（CWE-94）。
+# 每次调用随机操作数（4 位），杜绝"恰好撞上固定数字"；通用静态模板，不针对任何服务器。
+# declared_domain 只作附注供人工判定 dangerous-by-design（口径 B），不进本电池的裁决。
+def _code_battery() -> list[dict]:
+    A = secrets.randbelow(9000) + 1000        # 随机 4 位操作数
+    B = secrets.randbelow(9000) + 1000
+    a, b = str(A), str(B)
+    expr = a + "*" + b                         # "1234*5678"
+    P = str(A * B)                             # L1/模板族期望：算术积（6–8 位，不在载荷里）
+    ORD = str(77 * A)                          # 函数族期望：ord("M")=77 → 77*A
+    LEN = str(8 * A)                           # 函数族期望：len("McpfTest")=8 → 8*A
+
+    out: list[dict] = []
+
+    def add(value, expect, technique, tier, channel="inband", control=None, delay=0.0):
+        out.append({"value": value, "channel": channel, "expect": expect, "control": control,
+                    "delay_target": delay, "technique": technique, "tier": tier})
+
+    # L2 越域（判定力最强，放最前，命中即确认）——
+    #  · 模板/语言 delimiter 族：引擎须识别 {{}} / ${} / <%%> / #{} 才会求值（SSTI/模板注入）。
+    add("{{" + expr + "}}",    [P], "code:l2:tmpl-curly", "L2")    # Jinja2/Twig/Handlebars/Angular
+    add("${" + expr + "}",     [P], "code:l2:tmpl-dollar", "L2")   # EL/Thymeleaf/JS 模板串/Freemarker
+    add("<%= " + expr + " %>", [P], "code:l2:tmpl-erb", "L2")      # ERB/EJS/JSP
+    add("#{" + expr + "}",     [P], "code:l2:tmpl-hash", "L2")     # Ruby 串插值 / 部分 EL
+    #  · 函数调用族：引擎须真的调函数（ord/charCodeAt/length），纯算术解析器做不到。
+    add('ord("M")*' + a,          [ORD], "code:l2:py-ord", "L2")        # Python / 通用 eval
+    add('"M".charCodeAt(0)*' + a, [ORD], "code:l2:js-charcode", "L2")  # JavaScript
+    add('"M".ord*' + a,           [ORD], "code:l2:ruby-ord", "L2")     # Ruby
+    add('len("McpfTest")*' + a,   [LEN], "code:l2:py-len", "L2")       # Python len
+
+    # L1 求值回显（证明发生求值；裸算术单独仅判疑似）。
+    add(expr,            [P], "code:l1:bare", "L1")
+    add(a + " * " + b,   [P], "code:l1:bare-spaced", "L1")
+
+    # L3 解释器报错（弱证据 → 疑似）：故意语法错，靠 oracle.fingerprint 捕获 traceback（不走 inband 命中）。
+    add(expr + "*(",  None, "code:l3:syntaxerr", "")
+    add(expr + " +/ ", None, "code:l3:syntaxerr2", "")
+
+    # L4 时间盲判（会拖慢，靠后）：命中=服务端真执行了 import+sleep（RCE 级），走 timing 通道确认。
+    add('__import__("time").sleep(5)', None, "code:l4:py-sleep", "L2",
+        channel="timing", control='__import__("time").sleep(0)', delay=5.0)
+    return out
+
+
+_BATTERIES = {CI: _ci_battery, AI: _ai_battery, PT: _pt_battery, SSRF: _ssrf_battery,
+              CODE: _code_battery}
 
 
 def get_battery(vuln_class: str) -> list[dict]:

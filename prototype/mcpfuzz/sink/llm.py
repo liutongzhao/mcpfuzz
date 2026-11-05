@@ -36,8 +36,18 @@ Method (follow it, do not skip):
 5. Confidence: "high" (description/schema clearly implies this operation), "medium" (strongly suggested), "low" (plausible but weak).
 
 A parameter may map to several sinks, or to none (emit []).
+
+Extra requirement for "code_injection" ONLY: when (and only when) you assign code_injection to a parameter,
+add two extra keys to THAT label object, describing the parameter's DECLARED purpose (reading comprehension,
+NOT a vulnerability judgement):
+- "declared_domain": one short sentence paraphrasing what the tool/parameter says it evaluates
+  (e.g. "evaluates a mathematical expression", "renders a chart spec", "runs user-provided Python code").
+- "domain_evidence": the exact phrase quoted from the tool/parameter description or a schema field that supports it.
+If you cannot quote a supporting phrase, set "declared_domain" to "" (empty). Do NOT guess the purpose.
+
 Return ONLY a JSON object mapping each parameter path to a list:
 { "<param_path>": [ {"type": "...", "confidence": "high|medium|low", "evidence": "<quoted phrase>"} ], ... }
+For a code_injection label the object additionally carries "declared_domain" and "domain_evidence".
 Output nothing but the JSON."""
 
 
@@ -100,9 +110,14 @@ def classify_tool(tool, cache_dir: Path | None = None, max_attempts: int = 3) ->
                         continue
                     t = str(lab.get("type", "")).strip()
                     if t in SINK_TYPES and t != "none":
-                        clean.append({"type": t,
-                                      "confidence": _norm_conf(lab.get("confidence")),
-                                      "evidence": str(lab.get("evidence", lab.get("reason", "")))[:200]})
+                        entry = {"type": t,
+                                 "confidence": _norm_conf(lab.get("confidence")),
+                                 "evidence": str(lab.get("evidence", lab.get("reason", "")))[:200]}
+                        if t == "code_injection":
+                            # 声明域+引文（口径 B：仅附注供人工判定，不进工具自动裁决）
+                            entry["declared_domain"] = str(lab.get("declared_domain", ""))[:300]
+                            entry["domain_evidence"] = str(lab.get("domain_evidence", ""))[:200]
+                        clean.append(entry)
                 result[path] = clean
             break
         except AllModelsUnavailable:
