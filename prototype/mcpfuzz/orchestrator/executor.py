@@ -391,9 +391,9 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                         return ""
                 back, back_ctl, back_ctl2 = await _rb(landing), await _rb(control), await _rb(control2)
                 allp = (landing, control, control2)
-                s_land = _strip_paths(back, allp)
-                s_ctl = _strip_paths(back_ctl, allp)
-                s_ctl2 = _strip_paths(back_ctl2, allp)
+                s_land = _norm_pt_readback(back, allp)
+                s_ctl = _norm_pt_readback(back_ctl, allp)
+                s_ctl2 = _norm_pt_readback(back_ctl2, allp)
                 # 读器保真自校验：两条【从未写入】的对照路径必须读回一致。若不一致，说明读器输出
                 # 依赖路径本身 / 非确定（mock 或"比较型"工具），其"landing≠control"差分并不代表文件
                 # 真落地 → 不可信，弃用本通道（通用判据，不针对任何服务器）。真写入场景（如 git
@@ -474,6 +474,14 @@ def _strip_paths(s, paths):
     for pth in paths:
         s = s.replace(pth, "")
     return s.strip()
+
+
+def _norm_pt_readback(s, paths):
+    """路径穿越自对照比较前的归一：先去回显路径串，再把数字串折叠为占位符 `#`。
+    折叠数字是为了消除读器输出里**易变的数值噪声**（如 duration 毫秒、计数、时间戳）——
+    否则读器自身的运行抖动（landing duration:5 vs control:6）会被误当成"落地内容差异"而误报。
+    真实落地带来的是结构/文本差异（文件正文 vs 不存在），不是单纯数字变化，故折叠数字不伤真例。"""
+    return re.sub(r"\d+", "#", _strip_paths(s, paths))
 
 
 def _diff_hit(vuln_class, baseline_text, text, payload=None):
