@@ -19,9 +19,17 @@ from mcpfuzz.sink.types import AI, CODE, PT, SSRF
 from .extract import extract_value
 from .types import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
 
-# 参数注入 --version/--help 差分的特征标记（版本号 / usage / getopt 风格的选项报错）。
-# 不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误报。
-_AI_MARKERS = re.compile(r"(?i)(usage:|\bv?\d+\.\d+(?:\.\d+)?\b|unknown option|unrecognized option)")
+# 参数注入 --version/--help 差分的特征标记：只认"选项确实被 getopt/CLI 解析"的强信号——
+# usage/用法、getopt 选项报错、以及**带语境的版本横幅**（GNU/Copyright/"version X.Y"/"vX.Y.Z"）。
+# 【关键】不再匹配裸小数 `\d+\.\d+`：它会把正常输出里的比率/大小/数值（如 "ratio": 1.444）误当版本号，
+# 造成大面积误报（token-optimizer 实测）。版本号必须带 `v` 前三段或显式 "version " 语境才算。
+# 仍不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误报。
+_AI_MARKERS = re.compile(
+    r"(?i)("
+    r"usage:|unknown option|unrecognized option|option requires an argument|illegal option|"
+    r"copyright\s*\(c\)|\(gnu[^)]*\)|\bgnu\s+coreutils\b|"
+    r"\bversion\s+v?\d+\.\d+|\bv\d+\.\d+\.\d+\b"
+    r")")
 
 # 发到后端程序之前就被 schema/协议级输入校验挡下 → 未触达 sink。这些是 MCP 框架 / JSON-Schema
 # 通用报错（zod / JSON-RPC -32602 等），与具体服务器无关——不枚举任何某个程序的报错原文。
@@ -373,19 +381,28 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             if read_back is not None and tok:
                 ext = ".txt" if p.value.endswith(".txt") else ""
                 landing = "/tmp/" + tok + ext
-                control = "/tmp/" + tok + "_ctl" + ext   # 同形但从未写入的对照路径
-                try:
-                    back = await read_back(landing)
-                except Exception:
-                    back = ""
-                try:
-                    back_ctl = await read_back(control)
-                except Exception:
-                    back_ctl = ""
-                if back and _strip_paths(back, (landing, control)) != _strip_paths(back_ctl, (landing, control)):
+                control = "/tmp/" + tok + "_ctl" + ext     # 同形但从未写入的对照路径
+                control2 = "/tmp/" + tok + "_ctl2" + ext   # 第二条从未写入的对照路径，用于读器保真自校验
+
+                async def _rb(path):
+                    try:
+                        return await read_back(path) or ""
+                    except Exception:
+                        return ""
+                back, back_ctl, back_ctl2 = await _rb(landing), await _rb(control), await _rb(control2)
+                allp = (landing, control, control2)
+                s_land = _strip_paths(back, allp)
+                s_ctl = _strip_paths(back_ctl, allp)
+                s_ctl2 = _strip_paths(back_ctl2, allp)
+                # 读器保真自校验：两条【从未写入】的对照路径必须读回一致。若不一致，说明读器输出
+                # 依赖路径本身 / 非确定（mock 或"比较型"工具），其"landing≠control"差分并不代表文件
+                # 真落地 → 不可信，弃用本通道（通用判据，不针对任何服务器）。真写入场景（如 git
+                # clone/init 建目录）读器保真、对未写入路径一致读回"不存在"，照常确认、不受影响。
+                reader_faithful = (s_ctl == s_ctl2)
+                if back and reader_faithful and s_land != s_ctl:
                     ev = {"type": "path_traversal_write", "channel": "cross_tool",
                           "landing": landing, "control": control, "snippet": back[:160],
-                          "note": "越界写入路径读回内容与未写入对照路径不同，canary 真实落地，确认不受路径限制"}
+                          "note": "越界写入路径读回内容与未写入对照路径不同，且读器对未写入路径读回一致（保真），canary 真实落地"}
                     return _confirmed(target, param, PT, p, ev, seq_trace, args, "cross_tool")
         elif p.channel == "oob":
             oob_pending.append((p, args))
