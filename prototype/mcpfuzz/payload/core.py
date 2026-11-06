@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 
+from mcpfuzz.sink.types import W_MED
+
 from .batteries import get_battery
 from .types import ProbeSpec
 
@@ -16,11 +18,37 @@ from .types import ProbeSpec
 PATH_SIGNATURES = ["root:x:0:0:", "root:x:0:0", "daemon:x:"]
 
 
-def _budget(weight: float, total: int) -> int:
-    """权重 → 取 top-N。地板(0.1)也至少取前 2 条（召回下界）；权重越高覆盖越全。"""
-    if total <= 0:
-        return 0
-    return min(max(2, math.ceil(total * weight)), total)
+def _select_templates(templates: list, weight: float) -> list:
+    """选该类要发的载荷。按「证据类发全套 + 否则通道分层预算」，**保证不把整条确认通道砍掉**。
+
+    - 有真证据的类（权重 ≥ W_MED，即大模型 medium/high 或规则参数名命中）：发**全套**，
+      回显/时延/带外各通道齐全（否则像 eval/exec 这种无回显 sink 只靠回显会漏判）。
+    - 否则按预算 `ceil(总数×权重)`（地板 ≥2 条，保召回下界），但**先给每个出现的确认通道留 1 条**
+      （inband/timing/oob/differential/cross_tool/path_confine），再按原序补足预算——避免预算把
+      timing/带外这类正交通道整条切掉（这正是 vegalite/Jij 只判疑似的根因）。
+    """
+    total = len(templates)
+    if total == 0:
+        return []
+    if weight >= W_MED:
+        return list(templates)
+    budget = min(max(2, math.ceil(total * weight)), total)
+    picked: list[int] = []
+    pickset: set[int] = set()
+    seen_ch: set[str] = set()
+    for i, t in enumerate(templates):          # 每个通道的第一条，保证通道覆盖
+        ch = t.get("channel", "")
+        if ch not in seen_ch:
+            seen_ch.add(ch)
+            picked.append(i)
+            pickset.add(i)
+    for i in range(total):                      # 按原序补足到预算
+        if len(picked) >= budget:
+            break
+        if i not in pickset:
+            picked.append(i)
+            pickset.add(i)
+    return [templates[i] for i in sorted(picked)]
 
 
 class PayloadSynthesizer:
@@ -38,7 +66,7 @@ class PayloadSynthesizer:
             templates = get_battery(cls)
             if not templates:
                 continue
-            for tpl in templates[:_budget(weight, len(templates))]:
+            for tpl in _select_templates(templates, weight):
                 ps = self._build(prior.tool, prior.param_path, cls, tpl)
                 ps.rank = rank
                 rank += 1
