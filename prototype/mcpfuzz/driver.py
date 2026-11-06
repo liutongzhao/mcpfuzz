@@ -141,17 +141,26 @@ async def open_session(url: str, headers: dict | None = None, timeout: float | N
     """
     http_client = _make_http_client(headers, timeout)
     yielded = False
+    body_failed = False
     try:
         async with streamable_http_client(url, http_client=http_client,
                                           terminate_on_close=False) as (read, write, *_):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yielded = True
-                yield session
+                try:
+                    yield session
+                except BaseException:
+                    # 异常来自 with 正文（调用方），经 athrow 注入到此 yield 点。
+                    # 必须向上抛，绝不能和"拆解阶段偶发报错"一样吞掉：否则正文的 return 丢失、
+                    # async with 把异常吞成功退出，调用方拿到的是 None（既非结果也非异常），
+                    # 继而在上层 `findings += None` / `res.get(...)` 处炸（且间歇、极难定位）。
+                    body_failed = True
+                    raise
     except Exception:
-        if not yielded:
-            raise  # yield 之前失败 → 抛出，交给上层重试 / 记录真实原因
-        # yield 之后（拆解阶段）SDK 偶发报错，调用结果已在正文收集，吞掉即可
+        if not yielded or body_failed:
+            raise  # yield 之前失败（连接/初始化）或正文失败 → 抛出，交上层重试 / 记录真实原因
+        # 仅"yield 成功之后的纯拆解阶段"SDK 偶发报错：调用结果已在正文收集，吞掉即可
     finally:
         if http_client is not None:
             await http_client.aclose()
