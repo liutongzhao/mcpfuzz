@@ -146,8 +146,9 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
             if crashed:   # 崩溃落成一条可用性发现，进 findings.json / 报告
                 findings.append(Finding(target, "(存活探测)", DOS, SUSPECTED, note=note))
             return findings
-        findings.append(f)
-        _emit_finding(reporter, f)
+        for one in f:   # _attack_param 现在返回"每类一条"的列表（类别级早停，一个参数可多类确认）
+            findings.append(one)
+            _emit_finding(reporter, one)
 
     # 整套打完后存活探测（DoS 观测）：有载荷会把服务器打到无响应，即便单次调用只表现为报错。
     # K 次复测去抖，真失败才判崩溃，并落成一条可用性发现进 findings（从而进 findings.json/报告）。
@@ -279,7 +280,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     if max_payloads:
         probes = probes[:max_payloads]
     if not probes:
-        return Finding(target, param, repr_cls, LIKELY_CLEAN, note="无可用载荷（参数惰性/无启用类别）")
+        return [Finding(target, param, repr_cls, LIKELY_CLEAN, note="无可用载荷（参数惰性/无启用类别）")]
 
     reporter.emit("attack.param.start", tool=target, param=param, sink=repr_cls, payload_count=len(probes))
     delay = getattr(settings, "delay", 0.0) if settings else 0.0
@@ -292,7 +293,16 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     type_locked = False   # P5：数字参数被服务端强制类型校验 → 提前停
     numeric = getattr(prior, "param_type", None) in ("number", "integer")
     last_err = ""
+    confirmed_classes: set = set()   # 已确认的漏洞类 → 类内早停（不再发该类其余载荷），别的类继续测
+    confirmed_findings: list = []    # 每个确认的类别各记一条（一个参数可同时命中多类）
+
+    def _mark(cls, finding):
+        confirmed_findings.append(finding)
+        confirmed_classes.add(cls)
+
     for p in probes:
+        if p.vuln_class in confirmed_classes:
+            continue   # 该类已确认 → 类内早停：跳过其余该类载荷；不影响其它类继续测
         args = _shaped_args(base_args, prior, p.value, getattr(p, "placement", "value"))
         if args is None:
             continue   # 参数被声明约束锁死（uuid/锚死 pattern 等），这条载荷无法构造成合法骨架 → 跳过
@@ -339,9 +349,11 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     # 不特判"算术 vs 代码"：对 CODE 用 tier 标危害程度（L2=越域 RCE 级 / L1=算术），
                     # 但 tier 不作确认闸门（口径 ①）；declared_domain 仅作人工复核附注。
                     ev = _code_ev(prior, p, hit.evidence) if p.vuln_class == CODE else hit.evidence
-                    return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "inband")
+                    _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "inband"))
+                    continue
                 if oracle.fingerprint(text, p.vuln_class):
-                    return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
+                    _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband"))
+                    continue
             # SSRF 信任边界：只认与"发起 fetch"有因果关系的证据——
             #   · 正文命中云元数据特征串（ami-id/instance-id 等）→ 走上面 observe_inband 的 confirmed；
             #   · 对内网目标出现连接失败指纹（ECONNREFUSED/超时/getaddrinfo 等）→ 由上面的 error_fingerprint
@@ -353,11 +365,13 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 if await _confirm_timing(session, target, args, p, baseline_latency):
                     ev = {"type": "timing", "baseline": round(baseline_latency, 3),
                           "observed": round(latency, 3), "target": p.delay_target}
-                    return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "timing")
+                    _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "timing"))
+                    continue
         elif p.channel == "differential":
             ev = _diff_hit(p.vuln_class, baseline_text, text, p.value)
             if ev:
-                return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "differential")
+                _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "differential"))
+                continue
         elif p.channel == "cross_tool":
             # 写 canary 的载荷已在上面发出；若有配套读工具，读回 /tmp/{token} 并匹配
             if read_back is not None:
@@ -368,7 +382,8 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     back = ""
                 if back and p.probe.token in back:
                     ev = {"type": "cross_tool", "reader_path": canary_path, "snippet": back[:160]}
-                    return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "cross_tool")
+                    _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "cross_tool"))
+                    continue
             # 无配套读工具或未读到 → 不计入，继续
         elif p.channel == "path_confine":
             # fail-closed 写型路径穿越：用该 MCP 自己的读回器做"目标路径 vs 未写入对照路径"自对照差分。
@@ -403,7 +418,8 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     ev = {"type": "path_traversal_write", "channel": "cross_tool",
                           "landing": landing, "control": control, "snippet": back[:160],
                           "note": "越界写入路径读回内容与未写入对照路径不同，且读器对未写入路径读回一致（保真），canary 真实落地"}
-                    return _confirmed(target, param, PT, p, ev, seq_trace, args, "cross_tool")
+                    _mark(PT, _confirmed(target, param, PT, p, ev, seq_trace, args, "cross_tool"))
+                    continue
         elif p.channel == "oob":
             oob_pending.append((p, args))
         if delay:
@@ -416,6 +432,8 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             hit = hits.get(p.probe.token)
             if not hit:
                 continue
+            if p.vuln_class in confirmed_classes:
+                continue   # 该类已在循环中确认 → 类内早停，不重复记
             if p.vuln_class == SSRF:
                 # 信任边界：SSRF 的带外回连打的是我们的**公网** collector（target_scope=public）。
                 # 服务端能对外发请求=可达性（本职功能），**不**构成 SSRF 漏洞结论——SSRF 要求越过
@@ -423,30 +441,34 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 # 使结论落到"疑似无/已触达"而非"未触达"，不再堆"疑似有"。
                 saw_ok = True
             else:
-                return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob")
+                _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob"))
+
+    # 有任一类确认 → 返回所有确认结果（每类一条）；不被 weak/clean 覆盖
+    if confirmed_findings:
+        return confirmed_findings
 
     # 仅弱证据 → 疑似有
     if weak:
         cls, p, ev = weak[0]
         args = _shaped_args(base_args, prior, p.value, getattr(p, "placement", "value")) or base_args
-        return Finding(target, param, cls, SUSPECTED, payload=p.value, channel=ev.get("channel", p.channel),
-                       evidence=ev,
-                       sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],
-                       note="仅弱证据（错误指纹 / 回连未越边界），需人工复核")
+        return [Finding(target, param, cls, SUSPECTED, payload=p.value, channel=ev.get("channel", p.channel),
+                        evidence=ev,
+                        sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],
+                        note="仅弱证据（错误指纹 / 回连未越边界），需人工复核")]
 
     # 无任何命中：区分"疑似无"（本参数确有探针触达 sink）与"未触达"。
     # 触达只看本参数自己的探针——有正常返回(saw_ok)，或载荷抵达后端程序被其当非法参数拒
     # （程序级报错 saw_program_error）。不拿工具级 baseline 顶替：否则强类型/枚举/pattern
     # 参数的探针被 schema 全弹回时，会被 baseline 误翻成"疑似无漏洞"，掩盖"其实没测到"。
     if saw_ok or saw_program_error:
-        return Finding(target, param, repr_cls, LIKELY_CLEAN, note="")
+        return [Finding(target, param, repr_cls, LIKELY_CLEAN, note="")]
     if type_locked:
-        return Finding(target, param, repr_cls, UNREACHED,
-                       note="未触达 sink：服务端对该数值参数强制类型校验，字符串注入无法进入（探 1 条即停，省余下探针）")
+        return [Finding(target, param, repr_cls, UNREACHED,
+                        note="未触达 sink：服务端对该数值参数强制类型校验，字符串注入无法进入（探 1 条即停，省余下探针）")]
     if not sent_any:
         # 所有载荷都因参数被声明约束锁死（uuid/锚死 pattern/刚性 format）而无法构造合法骨架 → 未发送
-        return Finding(target, param, repr_cls, UNREACHED,
-                       note="未触达 sink：参数被声明约束（格式/枚举/类型）锁死，无法构造满足约束的注入载荷（未发送）")
+        return [Finding(target, param, repr_cls, UNREACHED,
+                        note="未触达 sink：参数被声明约束（格式/枚举/类型）锁死，无法构造满足约束的注入载荷（未发送）")]
     note = "未触达 sink：本参数所有探针在到达后端程序前被输入校验/参数约束拒绝"
     if last_err:
         err = str(last_err)
@@ -455,7 +477,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             # 报错指向的是另一个参数 → 不是本参数打不进，而是某兄弟必填参数的填充值不合法
             note += f"（实际被兄弟参数 '{blamed}' 的约束挡下，非本参数本身）"
         note += f"；完整错误：{err[:400]}"
-    return Finding(target, param, repr_cls, UNREACHED, note=note)
+    return [Finding(target, param, repr_cls, UNREACHED, note=note)]
 
 
 async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
