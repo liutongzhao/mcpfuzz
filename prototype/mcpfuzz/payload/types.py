@@ -26,5 +26,5 @@ class ProbeSpec:
     target_scope: str = "public"   # SSRF 载荷打的目标类别：public（公网/我们的回连collector）/
     #   internal（内网/环回/云元数据）。信任边界判定据此：只有 internal 目标被够到才算 SSRF 证据；
     #   公网出网是 URL 抓取类工具的本职功能，不单独构成漏洞。
-    tier: str = ""   # 代码注入两步判定分层："L1"=算术求值回显（证明发生求值，单独仅到疑似）/
-    #   "L2"=越域（非算术运算回显，证明是"代码"而非纯计算器 → 确认）。其它类别留空。
+    tier: str = ""   # 代码注入危害分层（不作确认闸门，口径 ①）："L1"=算术求值（impact=arithmetic_eval）/
+    #   "L2"=越域求值（模板 delimiter / 函数调用回显，impact=rce）。任一命中即确认；其它类别留空。

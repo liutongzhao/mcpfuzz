@@ -198,14 +198,14 @@ def _ssrf_battery() -> list[dict]:
 
 
 # ---------------- 代码注入（CWE-94：进程内语言解释器 / 模板引擎 / eval） ----------------
-# 两步判定（见 docs/代码注入检测设计.md）：
-#   L1 求值回显——裸算术 {A}*{B} 回显其积（积不在载荷里 → 反射免疫）：证明"发生了求值"。
-#     但裸算术可能只是受限计算器的本职功能，单独**仅判疑似**（executor 意图闸门）。
-#   L2 越域——输入被当"代码/模板"而非"一个数"处理：引擎须识别模板 delimiter（{{}}/${}/<%%>/#{}）
-#     或真的调函数（ord/charCodeAt/length）才会回显预期结果，纯算术解析器（SymPy 等）做不到 →
-#     证明是"代码"而非"算数" → **确认**（CWE-94）。
+# 判定（口径 ①，见 docs/代码注入检测设计.md §9）：**任何求值回显即确认**——服务端算出我未发出的
+# 计算结果（积不在载荷里 → 反射免疫），只可能是服务端对参数求了值 = 代码注入（CWE-94，执行确认）。
+# 不特判"算术 vs 代码"；tier 只给判定引擎标**危害程度**、不作确认闸门：
+#   L1 = 裸算术 {A}*{B}（impact=arithmetic_eval）。
+#   L2 = 输入被当"代码/模板结构"：模板 delimiter（{{}}/${}/<%%>/#{}）或函数调用（ord/charCodeAt/length），
+#        纯算术解析器会报错不回显、通用代码/模板引擎才回显（impact=rce）。放最前以优先捕获最强危害。
 # 每次调用随机操作数（4 位），杜绝"恰好撞上固定数字"；通用静态模板，不针对任何服务器。
-# declared_domain 只作附注供人工判定 dangerous-by-design（口径 B），不进本电池的裁决。
+# declared_domain 另由 sink LLM 产出，仅作人工复核附注，不进本电池/判定的裁决。
 def _code_battery() -> list[dict]:
     A = secrets.randbelow(9000) + 1000        # 随机 4 位操作数
     B = secrets.randbelow(9000) + 1000
@@ -232,8 +232,18 @@ def _code_battery() -> list[dict]:
     add('"M".charCodeAt(0)*' + a, [ORD], "code:l2:js-charcode", "L2")  # JavaScript
     add('"M".ord*' + a,           [ORD], "code:l2:ruby-ord", "L2")     # Ruby
     add('len("McpfTest")*' + a,   [LEN], "code:l2:py-len", "L2")       # Python len
+    #  · 对象图/类反射族：覆盖**纯算术做不到**的两种 sink——Python 格式串注入（CWE-94/134，
+    #    控制 `str.format()` 的格式串做属性访问）与**沙箱逃逸型 SSTI**（引擎禁了算术却放行属性访问）。
+    #    判据＝引擎遍历对象图直到根类，回显出运行时类 repr `<class 'object'>` / `class java.lang.Object`。
+    #    这些签名不在载荷里（载荷里是 __class__/__mro__ 等）→ 反射免疫；且只有真走了 MRO 才到 object，
+    #    仅对输入做 type-repr（只得 `<class 'str'>`）的工具不会命中 → 低误报。命中＝越域（impact=rce）。
+    OBJ = ["<class 'object'>", "class java.lang.Object"]
+    add('{{"".__class__.__mro__}}', OBJ, "code:l2:ssti-mro", "L2")      # Jinja2/Twig 对象图
+    add('{{[].__class__.__base__}}', OBJ, "code:l2:ssti-base", "L2")
+    add('{0.__class__.__mro__}',    OBJ, "code:l2:pyfmt-mro", "L2")     # Python str.format() 格式串
+    add("${''.class.superclass}",   OBJ, "code:l2:java-el", "L2")       # Java EL / SpEL 反射
 
-    # L1 求值回显（证明发生求值；裸算术单独仅判疑似）。
+    # L1 求值回显（裸算术；命中即确认，impact=arithmetic_eval）。
     add(expr,            [P], "code:l1:bare", "L1")
     add(a + " * " + b,   [P], "code:l1:bare-spaced", "L1")
 

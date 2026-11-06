@@ -278,7 +278,6 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
 
     oob_pending = []      # [(probe_spec, args)]
     weak = []             # [(vuln_class, probe_spec, evidence)] 弱证据 → 疑似有
-    code_l1 = None        # 代码注入：记录"L1 算术求值回显"命中（证明发生求值），等 L2 越域；无 L2 → 疑似
     saw_ok = False
     saw_program_error = False   # 载荷抵达后端程序、被当非法参数拒（已触达，用于区分"疑似无 vs 未触达"）
     sent_any = False      # 是否真的发出过载荷（全被"锁死约束"跳过时为 False）
@@ -328,17 +327,12 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 marker = (hit.evidence or {}).get("marker", "")
                 reflected = bool(marker) and marker in p.value
                 if not reflected:
-                    # 代码注入意图闸门（口径 B，见 docs/代码注入检测设计.md §5）：
-                    #   · L1 裸算术求值回显：仅证明"发生了求值"（可能是受限计算器的本职功能）→
-                    #     先记录、不定案，继续找 L2；全程无 L2 → 疑似。
-                    #   · L2 越域（模板 delimiter / 函数调用回显）：证明输入被当"代码"而非"一个数" → 确认。
-                    if p.vuln_class == CODE and getattr(p, "tier", "") == "L1":
-                        if code_l1 is None:
-                            code_l1 = (p, dict(hit.evidence or {}), args)
-                    else:
-                        ev = _code_ev(prior, p, hit.evidence) if p.vuln_class == CODE else hit.evidence
-                        return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "inband")
-                elif oracle.fingerprint(text, p.vuln_class):
+                    # 任何求值回显（服务端算出我未发出的计算结果）即确认代码注入（CWE-94，执行确认）。
+                    # 不特判"算术 vs 代码"：对 CODE 用 tier 标危害程度（L2=越域 RCE 级 / L1=算术），
+                    # 但 tier 不作确认闸门（口径 ①）；declared_domain 仅作人工复核附注。
+                    ev = _code_ev(prior, p, hit.evidence) if p.vuln_class == CODE else hit.evidence
+                    return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "inband")
+                if oracle.fingerprint(text, p.vuln_class):
                     return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
             # SSRF 信任边界：只认与"发起 fetch"有因果关系的证据——
             #   · 正文命中云元数据特征串（ami-id/instance-id 等）→ 走上面 observe_inband 的 confirmed；
@@ -414,20 +408,6 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             else:
                 return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob")
 
-    # 代码注入：L1 算术求值成立、但全程未观测到 L2 越域 → 疑似（可能是受限计算器，需更强证据或人工复核）
-    if code_l1 is not None:
-        p1, ev1, args1 = code_l1
-        ev1 = dict(ev1)
-        ev1["tier"] = "L1"
-        ev1["declared_domain"] = getattr(prior, "declared_domain", "")
-        ev1["domain_evidence"] = getattr(prior, "domain_evidence", "")
-        note = ("仅 L1 算术求值回显：证明服务端对该参数做了求值，但未观测到越过算术的能力"
-                "（可能是受限计算器 / 数学求值）→ 疑似，需 L2 越域或人工复核")
-        return Finding(target, param, CODE, SUSPECTED, payload=p1.value, channel="inband",
-                       evidence=ev1,
-                       sequence=seq_trace + [{"tool": target, "args": args1, "payload_param": param}],
-                       note=note)
-
     # 仅弱证据 → 疑似有
     if weak:
         cls, p, ev = weak[0]
@@ -500,14 +480,20 @@ def _diff_hit(vuln_class, baseline_text, text, payload=None):
 
 
 def _code_ev(prior, p, hit_evidence):
-    """代码注入 L2 确认的证据包：在回显证据上附 declared_domain（口径 B：只作人工判定
-    dangerous-by-design 的附注，工具不自动降级）。"""
+    """代码注入确认的证据包（口径 ①，不特判"算术 vs 代码"）：
+    服务端把参数求值并回显了我未发出的计算结果 → 即确认代码注入（CWE-94，执行确认）。
+    tier 只作**危害标注**、不作确认闸门：L2=越过算术的通用代码/模板求值（RCE 级）；L1=算术求值。
+    declared_domain 仅作人工复核附注（LLM 复述的参数声明用途 + 引文），不参与裁决。"""
     ev = dict(hit_evidence or {})
-    ev["tier"] = getattr(p, "tier", "") or "L2"
+    tier = getattr(p, "tier", "") or "L1"
+    ev["tier"] = tier
+    ev["impact"] = "rce" if tier == "L2" else "arithmetic_eval"
     ev["declared_domain"] = getattr(prior, "declared_domain", "")
     ev["domain_evidence"] = getattr(prior, "domain_evidence", "")
-    ev["note"] = ("L2 越域求值：回显了纯算术/取值做不到的运算结果（模板 delimiter 或函数调用），"
-                  "确认代码注入（CWE-94）。declared_domain 供人工判定是否 dangerous-by-design。")
+    ev["note"] = ("服务端对参数求值并回显了未发出的计算结果 → 确认代码注入（CWE-94，执行确认）。"
+                  + ("命中为越过算术的通用代码/模板求值，危害达 RCE 级。" if tier == "L2"
+                     else "命中为算术求值；更高危害以同参数 L2 探针结果为准。")
+                  + " declared_domain 供人工复核。")
     return ev
 
 
