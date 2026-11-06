@@ -242,6 +242,13 @@ def _code_battery() -> list[dict]:
     add('{{[].__class__.__base__}}', OBJ, "code:l2:ssti-base", "L2")
     add('{0.__class__.__mro__}',    OBJ, "code:l2:pyfmt-mro", "L2")     # Python str.format() 格式串
     add("${''.class.superclass}",   OBJ, "code:l2:java-el", "L2")       # Java EL / SpEL 反射
+    #  · 执行语句打印族：引擎执行一条"调用打印函数"的语句、把算出的积输出到 日志/stdout。适配
+    #    "执行代码但不返回表达式值"的 sink（如 pptr executeCode 回 undefined、只把 console.log 收进 logs）。
+    #    积不在载荷里 → 反射免疫；命中=执行了语句(非纯取值) → impact=rce。各语言一条,不匹配的引擎快速报错。
+    add("console.log(" + expr + ")", [P], "code:l2:js-log", "L2")       # JavaScript / Node vm
+    add("print(" + expr + ")",       [P], "code:l2:py-print", "L2")     # Python
+    add("puts " + expr,              [P], "code:l2:rb-puts", "L2")      # Ruby
+    add("echo " + expr + ";",        [P], "code:l2:php-echo", "L2")     # PHP
 
     # L1 求值回显（裸算术；命中即确认，impact=arithmetic_eval）。
     add(expr,            [P], "code:l1:bare", "L1")
@@ -251,9 +258,18 @@ def _code_battery() -> list[dict]:
     add(expr + "*(",  None, "code:l3:syntaxerr", "")
     add(expr + " +/ ", None, "code:l3:syntaxerr2", "")
 
-    # L4 时间盲判（会拖慢，靠后）：命中=服务端真执行了 import+sleep（RCE 级），走 timing 通道确认。
-    add('__import__("time").sleep(5)', None, "code:l4:py-sleep", "L2",
+    # L4 时间盲判（会拖慢，靠后）：各引擎用自己的"睡眠/忙等"语法——哪种引擎就哪条生效，不匹配的快速报错。
+    #   命中=服务端真执行了该代码（RCE 级），走 timing 通道按差分确认（control=零延时同构对照）。
+    #   适配"执行但无回显"的 sink（vegalite eval / Jij exec / pptr JS vm 等）。纯名被改写的解析器
+    #   （SymPy parse_expr 的 auto_symbol）这些裸名会失效→留作已知边界，靠人工。
+    add('__import__("time").sleep(5)', None, "code:l4:py-sleep", "L2",      # Python eval/exec
         channel="timing", control='__import__("time").sleep(0)', delay=5.0)
+    add("const _t=Date.now()+5000;while(Date.now()<_t){};0", None, "code:l4:js-busy", "L2",  # JS 同步忙等（无需 import）
+        channel="timing", control="const _t=Date.now()+0;while(Date.now()<_t){};0", delay=5.0)
+    add("sleep(5)", None, "code:l4:rb-sleep", "L2",                        # Ruby（Kernel#sleep 全局）
+        channel="timing", control="sleep(0)", delay=5.0)
+    add("sleep(5);", None, "code:l4:php-sleep", "L2",                      # PHP
+        channel="timing", control="sleep(0);", delay=5.0)
     return out
 
 
