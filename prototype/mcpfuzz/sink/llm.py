@@ -14,7 +14,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from mcpfuzz.llm_config import API_KEY, BASE_URL, MODEL
+from mcpfuzz.llm_config import API_KEY, BASE_URL, MODEL  # noqa: F401  (保留兼容；实际调用走 llm_failover)
+from mcpfuzz.llm_failover import AllModelsUnavailable
 
 from .types import SINK_TYPES
 
@@ -41,21 +42,10 @@ Output nothing but the JSON."""
 
 
 def _call(messages, timeout=120) -> str:
-    payload = json.dumps({"model": MODEL, "messages": messages, "max_tokens": 2000})
-    # 用 curl：该中转在部分环境下 python urllib 的 SSL 会失败；且不传 temperature（会 502），
-    # 所以无法靠 temperature=0 求稳，稳定性由本地缓存 + 地板 + 规则并集保证。
-    p = subprocess.run(
-        ["curl", "-sS", "-m", str(timeout), BASE_URL,
-         "-H", f"Authorization: Bearer {API_KEY}", "-H", "Content-Type: application/json",
-         "-d", "@-", "-w", "\n%{http_code}"],
-        input=payload, capture_output=True, text=True,
-    )
-    if p.returncode != 0:
-        raise RuntimeError(f"curl 失败({p.returncode}): {p.stderr.strip()[:200]}")
-    body, _, code = p.stdout.rpartition("\n")
-    if code != "200":
-        raise RuntimeError(f"HTTP {code}: {body[:200]}")
-    return json.loads(body)["choices"][0]["message"]["content"]
+    # 走多模型故障切换（见 llm_failover）：当前模型失败自动切备用；全部失败抛 AllModelsUnavailable，
+    # 该异常**不**被下面的规则兜底吞掉，而是向上冒泡让批量层暂停检测（等恢复 --resume 续跑）。
+    from mcpfuzz import llm_failover
+    return llm_failover.chat(messages, max_tokens=2000, timeout=timeout)
 
 
 def _parse(text) -> dict:
@@ -115,9 +105,11 @@ def classify_tool(tool, cache_dir: Path | None = None, max_attempts: int = 3) ->
                                       "evidence": str(lab.get("evidence", lab.get("reason", "")))[:200]})
                 result[path] = clean
             break
+        except AllModelsUnavailable:
+            raise   # 所有模型都挂了：不降级成规则兜底，向上冒泡让批量层暂停检测
         except Exception:
             if attempt == max_attempts:
-                result = {}   # 失败则留空，规则层仍会兜底
+                result = {}   # 单模型偶发失败（已在 failover 内切过备用仍不行）→ 留空，规则层兜底
     if cache_file is not None:
         cache_file.write_text(json.dumps(result, ensure_ascii=False))
     return result

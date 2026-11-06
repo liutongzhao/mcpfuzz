@@ -308,9 +308,12 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
         else:
             saw_ok = True
 
-        # 被动：错误指纹（弱证据），对响应与报错正文都看
+        # 被动：错误指纹（弱证据），对响应与报错正文都看。
+        # SSRF 例外：连接/解析失败指纹（ECONNREFUSED/getaddrinfo/Name or service not known…）
+        # 只在**内网/元数据目标**上才算 SSRF 证据——它证明服务端"试图越过信任边界去连内网"。
+        # 打公网目标连不通不是漏洞（本职功能的正常失败），不计。
         fp = oracle.fingerprint(text, p.vuln_class)
-        if fp:
+        if fp and not (p.vuln_class == SSRF and getattr(p, "target_scope", "public") != "internal"):
             weak.append((p.vuln_class, p, {"type": "error_fingerprint", "channel": "inband",
                                            "snippet": fp}))
 
@@ -327,6 +330,18 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
                 if oracle.fingerprint(text, p.vuln_class):
                     return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband")
+            # SSRF 信任边界：打**内网/元数据目标**且服务端**真取回了非空正文**→ 已越过信任边界。
+            # fail-closed 三重门：① 无错误(is_error=False)；② 取回内容非空（空壳/只报 ok 的工具不算——
+            # 它们对任何目标都空，不能证明够到内网）；③ 内容不是连接失败消息（ECONNREFUSED/getaddrinfo
+            # 等由 SSRF 错误指纹单独处理）；④ 内容不是把我们发的 URL 原样回显。被围栏拒绝(is_error=True)
+            # 自然不计。元数据体签名命中走上面的 confirmed。
+            if (p.vuln_class == SSRF and getattr(p, "target_scope", "public") == "internal"
+                    and not res["is_error"] and text.strip()
+                    and not oracle.fingerprint(text, SSRF)
+                    and p.value not in text):
+                weak.append((SSRF, p, {"type": "ssrf_internal_reach", "channel": "inband",
+                                       "note": "服务端真取回内网/元数据目标的非空正文，越过信任边界，疑似 SSRF",
+                                       "target": p.value, "snippet": text[:160]}))
         elif p.channel == "timing":
             if baseline_latency is not None and (latency - baseline_latency) >= p.delay_target * 0.6:
                 if await _confirm_timing(session, target, args, p, baseline_latency):
@@ -350,10 +365,22 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     return _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "cross_tool")
             # 无配套读工具或未读到 → 不计入，继续
         elif p.channel == "path_confine":
-            # 围栏差分：越界路径未被围栏拒绝 → 疑似路径穿越（写型无内容回显也适用）。弱证据 → 疑似有。
-            ev = _path_confinement_ev(res, text)
-            if ev:
-                weak.append((PT, p, ev))
+            # fail-closed 写型路径穿越：越界路径（含唯一 canary 名）被写后，用独立读回器读该落地
+            # 路径。读到正文 = canary 真落到沙箱外 = 确认不受路径限制；读不到（被围栏拦→read_back
+            # 对 is_error 返回空 / 无读回器 / 读型工具本就没写东西）→ 不产结论。
+            # 全程只认“读回到内容”这一正向实据，不解析服务端拒绝措辞（特判且不可靠）。
+            tok = getattr(p.probe, "token", None) if p.probe else None
+            if read_back is not None and tok:
+                landing = "/tmp/" + tok + (".txt" if p.value.endswith(".txt") else "")
+                try:
+                    back = await read_back(landing)
+                except Exception:
+                    back = ""
+                if back:
+                    ev = {"type": "path_traversal_write", "channel": "cross_tool",
+                          "landing": landing, "snippet": back[:160],
+                          "note": "越界路径写入后被独立读回，canary 真实落地，确认不受路径限制"}
+                    return _confirmed(target, param, PT, p, ev, seq_trace, args, "cross_tool")
         elif p.channel == "oob":
             oob_pending.append((p, args))
         if delay:
@@ -367,10 +394,11 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             if not hit:
                 continue
             if p.vuln_class == SSRF:
-                # 信任边界：抓取 URL 本就是功能，回连命中但未越信任边界 → 仅"疑似有"
-                weak.append((SSRF, p, {"type": "oob_ssrf", "channel": "oob",
-                                       "note": "服务端回连命中，但未证明越过信任边界（内网/元数据），疑似 SSRF",
-                                       **(hit.evidence or {})}))
+                # 信任边界：SSRF 的带外回连打的是我们的**公网** collector（target_scope=public）。
+                # 服务端能对外发请求=可达性（本职功能），**不**构成 SSRF 漏洞结论——SSRF 要求越过
+                # 信任边界（内网/元数据），那条由上面的 internal 目标探针负责。这里仅记可达性，
+                # 使结论落到"疑似无/已触达"而非"未触达"，不再堆"疑似有"。
+                saw_ok = True
             else:
                 return _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob")
 
@@ -415,35 +443,6 @@ async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
         adds.append(lat - baseline)
     adds.sort()
     return adds[len(adds) // 2] >= p.delay_target * 0.6
-
-
-# 路径围栏差分——越界路径被“应用层围栏拒绝”的特征（命中=防御到位，不算漏洞）。
-# 刻意不含 OS 级 "permission denied"：那是工具已尝试越界写、被系统拦下，恰恰是“无围栏”的证据。
-_CONFINE_DENY = ("access denied", "denied to path", "outside", "must be within",
-                 "must be inside", "not allowed", "forbidden", "path traversal",
-                 "traversal is", "restricted to", "restricted path", "sandbox",
-                 "allowed director", "within the allowed", "escapes", "escape the",
-                 "invalid path", "illegal path", "not permitted", "beyond the",
-                 "越界", "非法路径", "不允许", "禁止", "目录之外", "越权")
-# 越界路径“被解析到沙箱外”的普通文件错误特征（命中=工具确实去沙箱外找了=无围栏，读型用）。
-_RESOLVED_OUT = ("no such file", "not found", "enoent", "cannot find",
-                 "does not exist", "no such directory", "不存在", "找不到")
-
-
-def _path_confinement_ev(res, text):
-    """路径围栏差分判定（治写型路径穿越无内容回显 + 读固定/非 passwd 文件的越界判定）：
-    越界路径若【未被应用层围栏拒绝】——成功处理（写落到越界路径 / 读到内容），或仅以普通文件
-    错误（ENOENT/not found）告终（说明工具确实把路径解析到沙箱外去找了）——则判“疑似未受路径限制”。
-    返回证据 dict 或 None（被围栏拒绝/无法判断）。只产弱证据（疑似有），确认留给内容回显 oracle。
-    通用判定，不针对任何服务。"""
-    blob = ((text or "") + " " + (res.get("exc") or "")).lower()
-    if any(m in blob for m in _CONFINE_DENY):
-        return None   # 应用层围栏拒绝 → 防御到位，不算
-    if (not res["is_error"]) or any(m in blob for m in _RESOLVED_OUT):
-        return {"type": "path_confinement", "channel": "differential",
-                "note": "越界路径未被围栏拒绝（成功处理或已解析到沙箱外），读/写疑似不受路径限制",
-                "snippet": (text or "")[:160]}
-    return None
 
 
 def _diff_hit(vuln_class, baseline_text, text):

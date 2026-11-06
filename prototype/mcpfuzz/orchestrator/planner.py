@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from mcpfuzz.llmclient import complete
+from mcpfuzz.llm_failover import AllModelsUnavailable
 
 from .types import Plan, Step
 
@@ -113,6 +114,8 @@ def plan(target_tool, catalog, cache_dir: Path | None = None, max_attempts: int 
             result = _validate(_parse(complete(SYSTEM, user, max_tokens=2000)),
                                target_tool.name, tool_names)
             break
+        except AllModelsUnavailable:
+            raise   # 所有模型都挂了：冒泡暂停，不退化成 schema 兜底
         except Exception:
             result = None
     if result is None:
