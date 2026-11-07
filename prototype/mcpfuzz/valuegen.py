@@ -17,6 +17,15 @@ _PATH_KEYS = ("path", "file", "dir", "folder", "location", "dest", "filepath")
 _URL_KEYS = ("url", "uri", "endpoint", "link", "href")
 # 目录型线索：命中则填"唯一的新目录路径"（让工具自己 makedirs），否则按文件填
 _DIR_KEYS = ("dir", "folder", "directory")
+# 限返回量型数值线索：命中则填"大值"（仍夹进声明的 [min,max]），避免最小值 1 把可观测输出截断、
+# 致判定致盲（如 fetch 类 max_length=1 把 SSRF 元数据回显截成 1 字符 → 漏报）。只认"限制返回量"
+# 语义；刻意不含 index/offset/start（填大反而跳过内容）、timeout/delay/retry/port（填大有副作用）。
+_LIMIT_KEYS = ("max_length", "maxlength", "max_len", "maxchars", "max_chars", "maxbytes", "max_bytes",
+               "maxresults", "max_results", "num_results", "max_tokens", "maxtokens", "max_items",
+               "maxitems", "page_size", "pagesize", "per_page", "perpage", "max_size", "maxsize",
+               "limit", "length", "truncate", "top_k", "topk", "top_n")
+_LIMIT_DESC = ("maximum number of", "max number of", "number of characters", "characters to return",
+               "maximum length", "max length", "number of results", "truncat")
 
 
 def _path_filler(param) -> str:
@@ -152,6 +161,12 @@ def benign_value(param):
             return _path_filler(param)
         if any(k in name for k in _URL_KEYS):
             return "http://example.com/"
+
+    # 限返回量型数值参数：填大值（夹进声明界），别用最小值截断可观测输出致判定致盲
+    if param.type in ("integer", "number"):
+        desc = (getattr(param, "description", "") or "").lower()
+        if any(k in name for k in _LIMIT_KEYS) or any(k in desc for k in _LIMIT_DESC):
+            return _enforce(param, 100_000)
 
     if param.type == "array":
         n = getattr(param, "min_items", None) or 0
