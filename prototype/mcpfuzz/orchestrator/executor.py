@@ -335,6 +335,11 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
         # 只在**内网/元数据目标**上才算 SSRF 证据——它证明服务端"试图越过信任边界去连内网"。
         # 打公网目标连不通不是漏洞（本职功能的正常失败），不计。
         fp = oracle.fingerprint(text, p.vuln_class)
+        if not fp and res["is_error"] and p.vuln_class == SSRF:
+            # 连接失败/超时常以传输异常形式落在 exc（而非正文 text）→ 对 SSRF 兜底再扫一次错误通道，
+            # 免得"服务端确已越界去连内网、但连不通"的正面证据因只扫 text 而漏掉。仅 SSRF、仅内网目标
+            # 据此计证（见下方 target_scope 闸门），不影响其它类。
+            fp = oracle.fingerprint(res.get("exc") or "", p.vuln_class)
         if fp and not (p.vuln_class == SSRF and getattr(p, "target_scope", "public") != "internal"):
             weak.append((p.vuln_class, p, {"type": "error_fingerprint", "channel": "inband",
                                            "snippet": fp}))

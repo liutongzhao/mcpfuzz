@@ -30,7 +30,9 @@ _PATTERNS = {
     # inband 读回越界文件内容签名（passwd/key），或写后回读落地 canary（见 executor）。
     SSRF: [
         r"\b(?:ECONNREFUSED|connection refused)\b",
-        r"\b(?:ETIMEDOUT|connection timed out)\b",
+        r"\b(?:ETIMEDOUT|ESOCKETTIMEDOUT)\b",
+        r"\btimed out\b",                       # "Request/connection/operation timed out"（含 SDK 封装超时）
+        r"\bREQUEST_TIMEOUT\b",                  # 代码级超时标记（SdkError | code=REQUEST_TIMEOUT 等）
         r"\bno route to host\b",
         # DNS 解析/连接发起失败：证明我们给的值确实被当作主机名/URL 交给了网络客户端
         r"\b(?:ENOTFOUND|EAI_AGAIN)\b",
