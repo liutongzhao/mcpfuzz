@@ -289,6 +289,8 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
 
     oob_pending = []      # [(probe_spec, args)]
     weak = []             # [(vuln_class, probe_spec, evidence)] 弱证据 → 疑似有
+    ssrf_blind = []       # 盲 SSRF 候选：内网目标成功取回(is_error=False)但正文无元数据签名；
+                          # 待带外回连证实本参数确是 fetch sink 后，升级为疑似盲 SSRF（见 oob poll）
     saw_ok = False
     saw_program_error = False   # 载荷抵达后端程序、被当非法参数拒（已触达，用于区分"疑似无 vs 未触达"）
     sent_any = False      # 是否真的发出过载荷（全被"锁死约束"跳过时为 False）
@@ -362,6 +364,12 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             #     归入 weak（疑似），证明服务端确实去连了内网。
             # 不再用"返回了非空正文"反推"够到了内网"：返回的正文是工具的正常业务输出，与有无 fetch
             # 无因果（该参数常根本不发请求、服务端照常返回结果或业务报错），此推理不成立，故移除。
+            # 盲 SSRF 候选：内网/元数据目标成功取回(is_error==False)、正文无元数据签名、也无连接失败指纹。
+            # 单看无法区分"真取到内网"与"该参数根本不发请求、照常返回业务结果"→ 暂记候选；待下方带外回连
+            # 证实本参数确会外发请求(fetch sink)后再升级为疑似盲 SSRF（OOB 命中排除了"根本不发请求"的误报）。
+            if (p.vuln_class == SSRF and getattr(p, "target_scope", "public") == "internal"
+                    and not res["is_error"] and not fp):
+                ssrf_blind.append((p, args, text))
         elif p.channel == "timing":
             if baseline_latency is not None and (latency - baseline_latency) >= p.delay_target * 0.6:
                 if await _confirm_timing(session, target, args, p, baseline_latency):
@@ -444,10 +452,18 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 continue   # 该类已在循环中确认 → 类内早停，不重复记
             if p.vuln_class == SSRF:
                 # 信任边界：SSRF 的带外回连打的是我们的**公网** collector（target_scope=public）。
-                # 服务端能对外发请求=可达性（本职功能），**不**构成 SSRF 漏洞结论——SSRF 要求越过
-                # 信任边界（内网/元数据），那条由上面的 internal 目标探针负责。这里仅记可达性，
-                # 使结论落到"疑似无/已触达"而非"未触达"，不再堆"疑似有"。
+                # 服务端能对外发请求=可达性（本职功能），单独**不**构成 SSRF 漏洞结论。但它证实了一件
+                # 关键的事：本参数确会让服务端**外发请求**（是真 fetch sink，非 inert 参数）。
                 saw_ok = True
+                # 盲 SSRF 升级：既已证实本参数是 fetch sink（排除"根本不发请求"的误报顾虑），且它对内网/
+                # 元数据目标又成功取回(is_error=False、无连接失败指纹)→ 越过信任边界的疑似盲 SSRF。
+                if ssrf_blind and SSRF not in confirmed_classes and not any(
+                        w[0] == SSRF and (w[2] or {}).get("type") == "blind_ssrf" for w in weak):
+                    bp, bargs, btext = ssrf_blind[0]
+                    weak.append((SSRF, bp, {"type": "blind_ssrf", "channel": "oob+internal",
+                        "internal_target": bp.value, "snippet": (btext or "")[:160],
+                        "note": "带外回连证实本参数会外发请求(fetch sink)，且对内网/元数据目标成功取回"
+                                "(is_error=False、无连接失败指纹)→ 疑似越过信任边界的盲 SSRF，需人工复核"}))
             else:
                 _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob"))
 
