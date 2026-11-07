@@ -51,7 +51,7 @@ def _ci_battery() -> list[dict]:
     # 4) cross_tool：写 canary 到 /tmp/{token}，再由读工具读回（内容含 token）
     for ctx in _CI_CONTEXTS[:3]:
         out.append({"value": ctx.format(c="echo {TOKEN}$((41*41)) > /tmp/{TOKEN}"), "channel": "cross_tool",
-                    "expect": None, "control": None, "delay_target": 0.0,
+                    "expect": list(_CI_ECHO_EXPECT), "control": None, "delay_target": 0.0,
                     "technique": f"ci:writecanary:{ctx[:4]}"})
     return out
 

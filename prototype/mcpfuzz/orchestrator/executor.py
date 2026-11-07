@@ -380,11 +380,17 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                     back = await read_back(canary_path)
                 except Exception:
                     back = ""
-                if back and p.probe.token in back:
+                # 必须读回"求值 canary"（echo {TOKEN}$((41*41)) 的产物 {TOKEN}1681），一并证明：
+                #   ① 文件真落地（读回含我们写入的内容）；② $((41*41)) 被 shell 求值=命令真执行。
+                # 仅 token 命中不算——读器常把 canary_path 原样回显在"文件不存在/已缓存/报错"信息里
+                # （marker 只出现在路径串中，文件并未写入），那是通用误报。与 inband 的 {TOKEN}1681
+                # 口径统一（通用判据，不针对任何服务器）。
+                expect = p.probe.expect or []
+                if back and expect and any(e in back for e in expect):
                     ev = {"type": "cross_tool", "reader_path": canary_path, "snippet": back[:160]}
                     _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "cross_tool"))
                     continue
-            # 无配套读工具或未读到 → 不计入，继续
+            # 无配套读工具或未读到求值 canary → 不计入，继续
         elif p.channel == "path_confine":
             # fail-closed 写型路径穿越：用该 MCP 自己的读回器做"目标路径 vs 未写入对照路径"自对照差分。
             # 读两条同形路径——我们刚写入的越界落地路径 landing，与一条从未写过的对照路径 control。
