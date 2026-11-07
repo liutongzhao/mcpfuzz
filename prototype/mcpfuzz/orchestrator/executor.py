@@ -20,15 +20,17 @@ from .extract import extract_value
 from .types import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
 
 # 参数注入 --version/--help 差分的特征标记：只认"选项确实被 getopt/CLI 解析"的强信号——
-# usage/用法、getopt 选项报错、以及**带语境的版本横幅**（GNU/Copyright/"version X.Y"/"vX.Y.Z"）。
+# usage/用法、getopt 选项报错、以及**带语境的版本横幅**（GNU/Copyright/"version X.Y.Z"/"vX.Y.Z"）。
 # 【关键】不再匹配裸小数 `\d+\.\d+`：它会把正常输出里的比率/大小/数值（如 "ratio": 1.444）误当版本号，
-# 造成大面积误报（token-optimizer 实测）。版本号必须带 `v` 前三段或显式 "version " 语境才算。
+# 造成大面积误报（token-optimizer 实测）。版本号必须是**三段**（显式 "version X.Y.Z" 语境，或带 `v` 前缀
+# 的 vX.Y.Z）才算——两段式 "Version 1.2" 多为正文里的散文/数据（如数据集描述 "…Version 1.2 structure…"），
+# 会把 --version 探针打到含该串的正常响应上误报（neg_ckan 实测）；真 CLI 版本横幅基本是三段(git 2.39.1)。
 # 仍不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误报。
 _AI_MARKERS = re.compile(
     r"(?i)("
     r"usage:|unknown option|unrecognized option|option requires an argument|illegal option|"
     r"copyright\s*\(c\)|\(gnu[^)]*\)|\bgnu\s+coreutils\b|"
-    r"\bversion\s+v?\d+\.\d+|\bv\d+\.\d+\.\d+\b"
+    r"\bversion\s+v?\d+\.\d+\.\d+|\bv\d+\.\d+\.\d+\b"
     r")")
 
 # 发到后端程序之前就被 schema/协议级输入校验挡下 → 未触达 sink。这些是 MCP 框架 / JSON-Schema
