@@ -14,7 +14,7 @@ import re
 import time
 
 from mcpfuzz.driver import call_on
-from mcpfuzz.sink.types import AI, CODE, PT, SSRF
+from mcpfuzz.sink.types import AI, CODE, PT, SSRF, W_MED
 
 from .extract import extract_value
 from .types import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
@@ -475,22 +475,25 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             else:
                 _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob"))
 
-    # ── PT 路径接受自校准差分（通用疑似档）────────────────────────────────────
-    # 写/操作型路径穿越常无内容回显、也无配套读回器 → fail-closed 的 inband 签名 / cross_tool
-    # 读回都够不到，旧版一律塌成"疑似无"而漏报。这里纯用工具**自身对路径参数的反应**判有无围栏，
-    # 不需读回器、不解析拒绝措辞：
-    #   ① 活性：两条不同内界路径回应必须不同（证明输出确随路径变化=工具真在处理该路径）；
-    #   ② 接受同形：越界路径无错、且去掉各自注入路径串后的"模板"与内界一致（未被围栏拒绝/规范化改写）。
-    # 安全性：修复版必对越界做围栏→拒绝或规范化→模板与内界不同 → 不触发（负样本天然安全）。
-    if pt_probe is not None and PT not in confirmed_classes and not any(w[0] == PT for w in weak):
+    # ── PT 路径接受自校准差分（通用疑似档）—— 存在性敏感版 ────────────────────
+    # 写/操作型路径穿越常无内容回显、也无配套读回器 → inband 签名 / cross_tool 读回够不到 → 旧版漏报。
+    # 旧判据"两条随便的内界路径输出不同(t1≠t2)"被纯回显满足（a.txt≠b.txt 的回显即令 t1≠t2），分不清
+    # "真对路径做文件操作"与"把输入回显进响应"→ 在非路径参数(数字/日期/key)与修复版上大面积误报。
+    # 改为【存在性敏感】：工具对「真实存在的越界目标」与「确定不存在的越界目标」反应不同（去掉回显路径串
+    # 后"模板"仍异）→ 才证明工具真去访问了越界文件系统、而非回显。探针用 /dev/null、/tmp(存在/可写父)
+    # 对比 /mcpf..._nx/d/x(父目录都不存在)，均无破坏性。门控：只对 sink 标为高权重 PT(≥W_MED)的参数跑，
+    # 滤掉数字/日期/枚举等非路径参数。安全性：修复版对越界先围栏→存在/不存在都被拒成同一"blocked/规范化"
+    # 模板→存在性不敏感→不触发（负样本天然安全）。
+    pt_weight = getattr(prior, "class_weights", {}).get(PT, 0.0) if prior else 0.0
+    if (pt_probe is not None and PT not in confirmed_classes and not any(w[0] == PT for w in weak)
+            and pt_weight >= W_MED):
         import secrets
         tk = secrets.token_hex(4)
-        in1, in2 = f"mcpf{tk}a.txt", f"mcpf{tk}b.txt"
-        oob_forms = [
-            f"../../../../../../tmp/mcpf{tk}o.txt",                       # 字面遍历
-            f"%2e%2e%2f%2e%2e%2f%2e%2e%2ftmp%2fmcpf{tk}o.txt",            # 编码遍历（绕"含分隔符"检查）
-            f"/tmp/mcpf{tk}o.txt",                                        # 绝对路径逃出声明目录
-        ]
+        # 可达(存在/父目录存在)目标 vs 不可达(父目录都不存在)目标，各给 绝对+遍历 形态
+        reach = ["/dev/null", "../../../../../../dev/null",
+                 f"/tmp/mcpf{tk}_r", f"../../../../../../tmp/mcpf{tk}_r"]
+        nxs = [f"/mcpf{tk}_nx/d/x", f"../../../../../../mcpf{tk}_nx/d/x"]
+        allp = reach + nxs
 
         async def _call_path(v):
             a = _shaped_args(base_args, prior, v, getattr(pt_probe, "placement", "value"))
@@ -498,23 +501,26 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 return None
             r, _ = await _timed_call(session, target, a)
             return r
-        r1 = await _call_path(in1)
-        r2 = await _call_path(in2)
-        if r1 and r2 and not r1["is_error"]:
-            t1, t2 = (r1["text"] or ""), (r2["text"] or "")
-            if t1 and t1 != t2:                         # 活性：输出随路径变化 → 工具真在处理该路径
-                for oobv in oob_forms:
-                    ro = await _call_path(oobv)
-                    if not ro or ro["is_error"]:
-                        continue
-                    to = ro["text"] or ""
-                    paths = [in1, in2, oobv]
-                    if _norm_pt_readback(to, paths) == _norm_pt_readback(t1, paths):
-                        a_oob = _shaped_args(base_args, prior, oobv, getattr(pt_probe, "placement", "value")) or base_args
-                        weak.append((PT, pt_probe, {"type": "path_accept_nofence", "channel": "self_diff",
-                            "in_bounds": in1, "oob": oobv, "snippet": to[:160], "args": a_oob,
-                            "note": "工具对内界路径与越界路径处理无差别（均无错、去路径后模板一致，且输出确随路径变化=真在操作路径），未见围栏 → 疑似路径穿越"}))
-                        break
+
+        # 不可达基线：去掉所有探针路径串(并归一数字)后的"模板"集合；非确定性(多个不同模板)则不判
+        nx_tpls = set()
+        for nv in nxs:
+            rn = await _call_path(nv)
+            if rn is not None:
+                nx_tpls.add(_norm_pt_readback(rn.get("text") or "", allp))
+        if nx_tpls:
+            for rv in reach:
+                rr = await _call_path(rv)
+                if rr is None:
+                    continue
+                tpl = _norm_pt_readback(rr.get("text") or "", allp)
+                # 存在性敏感：可达目标的"模板"不在任一"不可达"模板中 → 工具对越界目标存在性有反应 → 真路径操作
+                if tpl not in nx_tpls:
+                    a_oob = _shaped_args(base_args, prior, rv, getattr(pt_probe, "placement", "value")) or base_args
+                    weak.append((PT, pt_probe, {"type": "path_accept_nofence", "channel": "self_diff",
+                        "reach": rv, "nonexist": nxs[0], "snippet": (rr.get("text") or "")[:160], "args": a_oob,
+                        "note": "工具对'存在的越界目标'(/dev/null 或 /tmp)与'不存在的越界目标'反应不同(去路径串后模板仍异)=真在访问越界文件系统、非单纯回显 → 疑似路径穿越"}))
+                    break
 
     # 有任一类确认 → 返回所有确认结果（每类一条）；不被 weak/clean 覆盖
     if confirmed_findings:
