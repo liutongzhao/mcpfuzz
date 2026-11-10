@@ -1,0 +1,2 @@
+{"name": "agency.kesey/pretrip", "registryType": "npm", "identifier": "pretrip-mcp", "launch": ["npx", "-y", "pretrip-mcp@1.0.1"], "tools_count": 2, "tool_names": ["scan_content", "get_coverage"]}
+{"name": "ai.datavidence/datavidence-financials", "registryType": "pypi", "identifier": "datavidence-financials", "launch": ["uvx", "datavidence-financials==0.1.5"], "tools_count": 6, "tool_names": ["get_financials", "list_filings", "get_financials_batch", "get_revisions", "search_companies", "get_usage"]}

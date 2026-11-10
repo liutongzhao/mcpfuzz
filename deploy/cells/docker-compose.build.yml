@@ -1,0 +1,20 @@
+# 只在【本地打镜像】时叠加用，不传服务器。用法见 build-save.sh：
+#   DOCKER_DEFAULT_PLATFORM=linux/amd64 \
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml build
+#
+# 关键：本机是 Mac(arm64)、服务器是 Linux(amd64)，必须带 DOCKER_DEFAULT_PLATFORM=linux/amd64，
+# 否则打出 arm 镜像、服务器跑不起来。首次构建会在模拟下跑 apt/pip，较慢（一次性）。
+
+services:
+  oob:
+    build:
+      context: ../infra/oob          # 复用 deploy/infra/oob/（collector.py + Dockerfile）
+
+  gateway:
+    build:
+      context: ./images/gateway      # mcphub + node/uv
+
+  runner:
+    build:
+      context: ../..                 # 仓库根：含 prototype/（扫描器源码，烤进镜像）
+      dockerfile: deploy/cells/images/runner/Dockerfile

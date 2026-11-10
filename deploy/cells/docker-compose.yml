@@ -1,0 +1,52 @@
+# 一份检测单元(cell) = 这一个 compose + 一个批次 jsonl。靠 `-p <批次名>` 戳出任意多份，彼此隔离。
+#
+# 本文件【只认镜像、不 build】——这是传到服务器上用的那一份。
+# 服务器先 `docker load` 镜像包，再：
+#   BATCH=batch-001 docker compose -p batch-001 up -d
+# 本地打镜像用 docker-compose.build.yml 叠加（见 build-save.sh）。
+#
+# 镜像(自包含，含扫描器源码 + llm_config)：
+#   mcpfuzz-runner / mcpfuzz-gateway / mcpfuzz-oob，tag 由 IMAGE_TAG 控制（默认 latest）。
+
+services:
+  oob:
+    image: mcpfuzz-oob:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+
+  gateway:
+    image: mcpfuzz-gateway:${IMAGE_TAG:-latest}
+    restart: unless-stopped   # 被注入载荷打挂 → 自动拉回（runner 靠 --resume 续跑）
+    environment:
+      # mcphub 的 Docker 启动默认不建固定账号：首启若没设 ADMIN_PASSWORD 会随机生成并只打到日志。
+      # 这里把它定死成与 runner 登录用的同一个密码（首启且无用户时生效；换密码需重建容器使其重新首启）。
+      ADMIN_PASSWORD: ${GATEWAY_PASSWORD:-admin123}
+      # 目标包的下载源：网关现场 npx/uvx 拉起 stdio 目标时，子进程继承这些 env。
+      # 默认官方源；国内服务器拉 npm/PyPI 慢或断时，在 .env 里把 NPM_REGISTRY / UV_INDEX 换成国内镜像。
+      npm_config_registry: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+      UV_DEFAULT_INDEX: ${UV_INDEX:-https://pypi.org/simple}
+    # 不对外暴露端口（多 cell 同机会冲突）；要看面板临时加：ports: ["3000:3000"]
+
+  runner:
+    image: mcpfuzz-runner:${IMAGE_TAG:-latest}
+    depends_on:
+      - gateway
+      - oob
+    restart: on-failure
+    environment:
+      BATCH: ${BATCH:-sample}
+      GATEWAY_URL: http://gateway:3000
+      GATEWAY_USER: ${GATEWAY_USER:-admin}
+      GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:-admin123}
+      MCP_OOB_CALLBACK: http://oob:9100
+      MCP_OOB_QUERY: http://oob:9100/__hits
+      # 单工具总时长看门狗（秒）：留空=用镜像内置默认 900s(15分钟)；要调阈值在 .env 设 TOOL_TIMEOUT，不必重打镜像
+      TOOL_TIMEOUT: ${TOOL_TIMEOUT:-}
+      # 第一层大模型(ai-pixel)的 key：每批不同，起这份 cell 时按批注入，例如：
+      #   PIXEL_API_KEY=sk-本批的key BATCH=batch-6 docker compose -p batch-6 up -d
+      # 留空则用镜像内置的本地默认 key。第二/三层(deepseek / apikey.fan)统一，已烤进镜像。
+      PIXEL_API_KEY: ${PIXEL_API_KEY:-}
+    volumes:
+      # 每份唯一的差别：这份 cell 扫哪些目标（你切好丢进 batches/ 的那一片）
+      - ./batches/${BATCH:-sample}.jsonl:/work/batch.jsonl:ro
+      # 产物回收：每份一个目录
+      - ./results/${BATCH:-sample}:/work/runs

@@ -1,0 +1,15 @@
+# 控制 docker build 上下文（deploy/cells 的 runner 镜像以仓库根为上下文）。
+# 排除大体积/无关内容，保留 prototype/ 源码本身。
+.git
+**/__pycache__
+**/*.pyc
+.DS_Store
+data/
+docs/
+deploy/batches/
+deploy/cells/results/
+deploy/cells/batches/*.jsonl
+deploy/cells/*.tar.gz
+prototype/.venv/
+prototype/runs/
+prototype/out/

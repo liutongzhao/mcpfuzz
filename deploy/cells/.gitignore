@@ -1,0 +1,9 @@
+# 运行产物与真实批次不入库（体积大/是数据）；保留空目录占位和 sample.jsonl 作格式示例。
+results/*
+!results/.gitkeep
+batches/*.jsonl
+!batches/sample.jsonl
+.env
+bearer.txt
+# 本地打的镜像包（含密钥，绝不入库）
+*.tar.gz
