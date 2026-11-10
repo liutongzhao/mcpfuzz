@@ -24,11 +24,14 @@ class Settings:
     timeout: float = 30.0
     retries: int = 3
     delay: float = 0.0
+    tool_timeout: float = 900.0   # 单工具检测总时长看门狗（秒）：一个工具从序列构建到攻击判定的总耗时
+                                   # 超过它就放弃该工具、把其参数记为"未测成"、换下一个，避免卡死整批。
+                                   # 默认 15 分钟；<=0 关闭看门狗。仅 Unix 主线程生效（容器内即是）。
     # 大模型
     llm_sink: bool = True
     llm_plan: bool = True
     sequence_agent: bool = True    # 序列构建智能体（闭环实跑产配方）；关闭则回退一次性规划
-    agent_rounds: int = 4          # 智能体最大修复轮次
+    agent_rounds: int = 6          # 智能体最大修复轮次（recursion_limit = max(10, rounds*6)）
     llm_workers: int = 6
     use_cache: bool = True
     # 范围

@@ -166,7 +166,7 @@ async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
         conn["headers"] = headers
     client = MultiServerMCPClient({"target": conn})
 
-    rounds = max(1, getattr(settings, "agent_rounds", 4) if settings else 4)
+    rounds = max(1, getattr(settings, "agent_rounds", 6) if settings else 6)
     recursion = max(10, rounds * 6)
 
     # 持久会话：工具绑定到同一个 MCP 会话，set_working_dir 这类状态在整个探索过程中保留
@@ -201,6 +201,15 @@ async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
 
 _MODEL = None
 _MODEL_PROVIDER = None   # 记录 _MODEL 当前绑的 provider 名；故障切换后 provider 变了则重建
+
+
+def reset_model():
+    """丢弃进程内复用的 ChatOpenAI 单例。单工具超时中断后，智能体常驻事件循环会被整只丢弃
+    （见 core._reset_agent_loop_after_abort）；该单例的 httpx 客户端绑在旧循环上，必须一并重置，
+    否则下一个工具复用到绑死在已关闭循环上的客户端 → 'Event loop is closed'（P7）。"""
+    global _MODEL, _MODEL_PROVIDER
+    _MODEL = None
+    _MODEL_PROVIDER = None
 
 
 def _make_model(settings):

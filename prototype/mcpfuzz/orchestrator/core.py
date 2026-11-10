@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import time
 from pathlib import Path
 
@@ -31,6 +32,68 @@ def _get_agent_loop():
     if _AGENT_LOOP is None or _AGENT_LOOP.is_closed():
         _AGENT_LOOP = asyncio.new_event_loop()
     return _AGENT_LOOP
+
+
+# --- 单工具总时长看门狗 ------------------------------------------------------
+# 用 SIGALRM 在主线程上硬性限时：一个工具（序列构建 + 攻击判定）耗时超预算就抛出中断，
+# 放弃该工具、换下一个，避免某个工具把整批卡死。只在 Unix 主线程生效（容器内即是）；
+# 装不上就优雅退化为"无单工具超时"，不影响检测本身。
+
+
+class ToolBudgetExceeded(BaseException):
+    """单工具超预算中断。**刻意继承 BaseException**（而非 Exception）：这样 _build_plan_sync /
+    _attack_tool 里那些 `except Exception` 不会把它吞掉，能一路冒泡到工具循环层被专门处理。"""
+
+
+def _raise_tool_budget(signum, frame):
+    raise ToolBudgetExceeded()
+
+
+def _arm_tool_alarm(seconds: float) -> bool:
+    """装一个 seconds 秒后触发的 SIGALRM 看门狗；返回是否真的装上了。
+    预算 <=0 / 非 Unix / 非主线程（signal.signal 会抛 ValueError）→ 返回 False，退化为无看门狗。"""
+    if not seconds or seconds <= 0 or not hasattr(signal, "setitimer"):
+        return False
+    try:
+        signal.signal(signal.SIGALRM, _raise_tool_budget)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _disarm_tool_alarm(armed: bool) -> None:
+    if not armed:
+        return
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    except (ValueError, OSError):
+        pass
+
+
+def _reset_agent_loop_after_abort() -> None:
+    """工具超时被中断后调用。智能体常驻事件循环可能停在半截的 await 上（有悬挂任务/半开 socket）；
+    保守起见整只丢弃并重置绑在其上的 ChatOpenAI 单例，下一个工具用全新循环+客户端重建，
+    避免残留任务或 'Event loop is closed' 污染后续工具。只有真超时才付这点重建代价（极少发生）。"""
+    global _AGENT_LOOP
+    loop = _AGENT_LOOP
+    _AGENT_LOOP = None
+    try:
+        agent.reset_model()
+    except Exception:
+        pass
+    if loop is None or loop.is_closed():
+        return
+    try:
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+    except Exception:
+        pass
+    try:
+        loop.close()
+    except Exception:
+        pass
 
 
 class _NullReporter:
@@ -76,6 +139,7 @@ class Orchestrator:
         timeout = self.settings.timeout if self.settings else None
         retries = max(1, self.settings.retries) if self.settings else 3
         poll_window = (self.settings.poll_rounds, self.settings.poll_interval) if self.settings else (3, 2.0)
+        tool_budget = float(getattr(self.settings, "tool_timeout", 0.0) or 0.0) if self.settings else 0.0
         total = len(by_tool)
         for idx, (tool_name, sink_params) in enumerate(by_tool.items(), 1):
             tool = self._tools_by_name.get(tool_name)
@@ -89,12 +153,27 @@ class Orchestrator:
                                    steps=len(p.steps), reachable=p.reachable, note=p.note,
                                    param_count=len(sink_params))
                 continue
-            # 序列构建在攻击会话之外完成（智能体自建 MCP 连接做发现），再开会话确定性回放
-            plan = self._build_plan_sync(tool, use_agent, plan_cache, agent_cache)
-            self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
-                               steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
-                               param_count=len(sink_params))
-            findings += self._attack_tool(tool, plan, sink_params, timeout, poll_window, retries)
+            # 单工具总时长看门狗：序列构建+攻击判定合起来超预算就放弃本工具、记未测成、换下一个，
+            # 避免某个工具（最常见是智能体序列构建啃不动的依赖链）把整批卡死。
+            t_tool = time.time()
+            armed = _arm_tool_alarm(tool_budget)
+            try:
+                # 序列构建在攻击会话之外完成（智能体自建 MCP 连接做发现），再开会话确定性回放
+                plan = self._build_plan_sync(tool, use_agent, plan_cache, agent_cache)
+                self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
+                                   steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
+                                   param_count=len(sink_params))
+                findings += self._attack_tool(tool, plan, sink_params, timeout, poll_window, retries)
+            except ToolBudgetExceeded:
+                elapsed = time.time() - t_tool
+                note = f"单工具超时（预算 {int(tool_budget)}s，用时 {elapsed:.0f}s）已放弃，换下一个工具"
+                self.reporter.emit("attack.tool.timeout", tool=tool_name, index=idx, total=total,
+                                   seconds=round(elapsed, 1), budget=tool_budget)
+                _reset_agent_loop_after_abort()   # 智能体常驻循环可能停在半截，丢弃重建免污染后续工具
+                findings += [Finding(tool_name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
+                             for ps in sink_params]
+            finally:
+                _disarm_tool_alarm(armed)
         return findings
 
     def _build_plan_sync(self, tool, use_agent, plan_cache, agent_cache):

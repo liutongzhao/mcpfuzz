@@ -49,7 +49,7 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
     g_llm.add_argument("--no-agent", dest="sequence_agent", action="store_false", default=None,
                        help="关闭序列构建智能体，回退一次性规划")
     g_llm.add_argument("--agent-rounds", dest="agent_rounds", type=int, default=None, metavar="N",
-                       help="序列构建智能体最大修复轮次（默认 4）")
+                       help="序列构建智能体最大修复轮次（默认 6）")
     g_llm.add_argument("--no-llm-plan", dest="llm_plan", action="store_false", default=None,
                        help="编排只用兜底计划（长度 1，schema 填值，关大模型）")
     g_llm.add_argument("--llm-workers", type=int, default=None, metavar="N",
@@ -63,6 +63,9 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
     g_net.add_argument("--poll-rounds", type=int, default=None, metavar="N", help="OOB 回收轮数")
     g_net.add_argument("--poll-interval", type=float, default=None, metavar="SEC", help="OOB 回收间隔")
     g_net.add_argument("--timeout", type=float, default=None, metavar="SEC", help="单次调用超时")
+    g_net.add_argument("--tool-timeout", dest="tool_timeout", type=float, default=None, metavar="SEC",
+                       help="单工具总时长看门狗：一个工具检测超过该秒数就放弃、记未测成、换下一个"
+                            "（默认 900=15 分钟；<=0 关闭）")
     g_net.add_argument("--retries", type=int, default=None, metavar="N", help="连接/调用重试次数")
     g_net.add_argument("--delay", type=float, default=None, metavar="SEC", help="每条载荷之间的间隔（限速）")
 

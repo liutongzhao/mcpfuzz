@@ -156,6 +156,9 @@ def _fmt_line(ev: Event) -> str | None:
         return f"⚠ 服务器无响应（疑似 DoS）  {d.get('tool')}: {d.get('note')}"
     if t == "attack.tool.error":
         return f"[异常] {d.get('tool')} 会话异常: {d.get('error')}"
+    if t == "attack.tool.timeout":
+        return (f"[超时] ({d.get('index')}/{d.get('total')}) {d.get('tool')} "
+                f"用时 {d.get('seconds')}s 超过单工具预算 {int(d.get('budget', 0))}s → 放弃该工具，换下一个")
     if t == "launchpad.fail":
         return f"[未测成] {d.get('tool')}: {d.get('reason')}"
     if t == "launchpad.warn":
@@ -266,7 +269,8 @@ class RichConsole(_BaseTextConsole):
             style = "red"
         elif ev.type == "finding.suspected":
             style = "magenta"
-        elif ev.type in ("launchpad.fail", "launchpad.warn", "finding.unreached", "finding.skipped"):
+        elif ev.type in ("launchpad.fail", "launchpad.warn", "finding.unreached", "finding.skipped",
+                         "attack.tool.timeout"):
             style = "yellow"
         elif ev.type == "gateway.error":
             style = "yellow"
