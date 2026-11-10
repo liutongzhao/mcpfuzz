@@ -9,6 +9,7 @@
   - 「部署失败」= 该目标在 batch_summary 里带 error（含「tools=0 后端未就绪」「连接失败」等；
     扫描器对起不来的后端会记成 error 而不是崩，见 prototype/mcpfuzz/run.py）。
   - 「部署成功」= 无 error，即起来且 tools>0、完整扫完。
+  - 部署失败的目标会在整批跑完后补跑一轮（扫描器 --deploy-retry-rounds），attempts 列记第几次才定论。
   - 「有发现」= confirmed>0 或 suspected>0（人工复核前的工具判定）。
 纯标准库。多机器：先把各机 results/ 汇到一处再跑本脚本。
 """
@@ -65,6 +66,7 @@ def main():
                 "identifier": info.get("identifier", ""),
                 "registryType": info.get("registryType", ""),
                 "deployed": "no" if err else "yes",
+                "attempts": r.get("attempt", 1),
                 "tools_expected": info.get("tools_count_expected", ""),
                 "tools_seen": tools_seen,
                 "confirmed": r.get("confirmed", "") if not err else "",
@@ -85,7 +87,8 @@ def main():
     conf = sum(1 for r in rows if r["deployed"] == "yes" and (r["confirmed"] or 0) and r["confirmed"] != "" and int(r["confirmed"]) > 0)
     susp = sum(1 for r in rows if r["deployed"] == "yes" and r["suspected"] != "" and int(r["suspected"] or 0) > 0)
     print(f"汇总 {len(summaries)} 个 cell，共 {n} 个目标：")
-    print(f"  部署成功 {dep}（{dep*100//max(n,1)}%） / 部署失败 {n-dep}")
+    late = sum(1 for r in rows if r["deployed"] == "yes" and int(r["attempts"]) > 1)
+    print(f"  部署成功 {dep}（{dep*100//max(n,1)}%，其中补跑才成功 {late}） / 部署失败 {n-dep}")
     print(f"  含确认(confirmed>0) {conf} / 含疑似(suspected>0) {susp}")
     print(f"  明细 → {out_csv}")
 

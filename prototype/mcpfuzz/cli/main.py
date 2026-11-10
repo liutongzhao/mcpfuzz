@@ -19,7 +19,8 @@ from pathlib import Path
 from mcpfuzz.config import Settings, build_settings
 from mcpfuzz.report import render_markdown
 from mcpfuzz.llm_failover import AllModelsUnavailable
-from mcpfuzz.run import make_run_dir, read_batch_file, scan_target, slugify, write_batch_summary
+from mcpfuzz.run import (GatewayNotReady, make_run_dir, read_batch_file, scan_target, slugify,
+                         write_batch_summary)
 from mcpfuzz.targetcfg import resolve_target
 
 from .console import build_console
@@ -125,6 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--fail-fast", action="store_true", help="批量时遇到失败立即中断（默认跳过继续）")
     p_scan.add_argument("--resume", action="store_true",
                         help="断点续跑：跳过本批次 runs/<NAME>/_done.jsonl 里已完成的目标（崩溃/中断后重启直接接着跑）")
+    p_scan.add_argument("--deploy-retry-rounds", dest="deploy_retry_rounds", type=int, default=1, metavar="N",
+                        help="部署失败补跑轮数：整批跑完后把部署失败(后端起不来/连不上)的目标再试 N 轮（默认 1；0 关闭）")
     p_scan.add_argument("--dry-run", action="store_true", default=None,
                         help="等价于 recon：只预览攻击面，不发载荷")
     _add_common_scan_args(p_scan)
@@ -256,11 +259,12 @@ def _done_ledger_path(out_dir: str) -> Path:
 
 
 def _load_done_ledger(out_dir: str):
-    """读断点账本，返回 (done_keys:set, prior_results:list)。文件不存在/半行损坏都安全降级。"""
+    """读断点账本，返回 (done_keys:set, latest:dict[key→result])。同一目标可能有多条记录
+    （首轮部署失败 + 补跑），以**最后一条**为准；dict 保持首次出现的顺序。文件不存在/半行损坏都安全降级。"""
     path = _done_ledger_path(out_dir)
-    done, prior = set(), []
+    done, latest = set(), {}
     if not path.exists():
-        return done, prior
+        return done, latest
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -270,11 +274,12 @@ def _load_done_ledger(out_dir: str):
         except json.JSONDecodeError:
             continue
         key = rec.get("_key")
-        if key and key not in done:
-            done.add(key)
-            if rec.get("result"):
-                prior.append(rec["result"])
-    return done, prior
+        if not key:
+            continue
+        done.add(key)
+        if rec.get("result"):
+            latest[key] = rec["result"]
+    return done, latest
 
 
 def _append_done_ledger(out_dir: str, key: str, result: dict) -> None:
@@ -297,9 +302,9 @@ def cmd_scan(args) -> int:
     targets = _resolve_targets(args)
     extra_headers = _parse_headers(args.header)
 
-    # 断点续跑：从账本载入已完成目标，过滤掉，剩余才扫；prior_results 让最终汇总仍完整
+    # 断点续跑：从账本载入已完成目标，过滤掉，剩余才扫；latest 让最终汇总仍完整
     resume = bool(getattr(args, "resume", False))
-    done_keys, results = (_load_done_ledger(settings.out_dir) if resume else (set(), []))
+    done_keys, latest = (_load_done_ledger(settings.out_dir) if resume else (set(), {}))
     pending = [(t, n) for (t, n) in targets if _target_key(t, n) not in done_keys]
     skipped = len(targets) - len(pending)
 
@@ -309,11 +314,13 @@ def cmd_scan(args) -> int:
 
     from mcpfuzz.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED)
     console = build_console(settings.format, settings.verbose or 0, bool(settings.quiet))
-    for target_arg, name in pending:
+
+    def scan_one(target_arg, name, attempt):
+        """扫一个目标并落账本。返回 False 表示整批要停（暂停 / fail-fast）。"""
         label = name or target_arg
         key = _target_key(target_arg, name)
         console.start(label)
-        paused = None   # 置为暂停原因则本目标不计账本、循环结束后 break
+        paused = None   # 置为暂停原因则本目标不计账本、整批停
         try:
             run_dir, findings = _run_one(target_arg, name, settings, console, extra_headers)
             result = {"target": label, "run_dir": str(run_dir),
@@ -325,6 +332,8 @@ def cmd_scan(args) -> int:
         except AllModelsUnavailable as e:
             # 所有大模型都不可用：**暂停**整批（不把当前目标记入账本，恢复后 --resume 从它续跑）。
             paused = str(e)[:160]
+        except GatewayNotReady as e:
+            result = {"target": label, "error": str(e)[:300], "deploy_failed": True}
         except Exception as e:
             result = {"target": label, "error": str(e)[:300]}
         finally:
@@ -334,14 +343,35 @@ def cmd_scan(args) -> int:
         if paused is not None:
             print(f"\n⏸  所有大模型均不可用，已暂停检测（{paused}）。")
             print(f"   当前目标 {label} 未计入账本；模型恢复后用 --resume 从这里续跑即可。")
-            break
+            return False
+        # 第几次尝试部署（1=首轮，2+=整批跑完后的补跑）：论文据此区分"一次成功/补跑才成功/补跑仍失败"
+        result["attempt"] = attempt
         # 账本在收尾（含清理）之后才落：重启续跑时不会漏掉某个目标的清理。崩在这之前→该目标重跑一次（幂等可接受）
-        results.append(result)
+        latest[key] = result
         _append_done_ledger(settings.out_dir, key, result)
         if "error" in result and args.fail_fast:
             print(f"fail-fast：{label} 失败，中断。已完成的在账本里，可 --resume 续跑。")
-            break
+            return False
+        return True
 
+    go_on = all(scan_one(t, n, 1) for (t, n) in pending)   # all() 遇 False 即停
+
+    # 部署失败补跑：首轮全部跑完后，把"部署失败"的目标再试一轮（与首轮隔开较长时间，
+    # 偶发的下载慢/网关连接抖动多半已过去）。仍失败才算真部署失败。
+    # 依据账本里各目标**最新**一条记录挑选，所以补跑中途崩溃后 --resume 也能接着补。
+    retry_rounds = max(0, int(getattr(args, "deploy_retry_rounds", 1) or 0))
+    for rnd in range(1, retry_rounds + 1):
+        if not go_on:
+            break
+        todo = [(t, n) for (t, n) in targets
+                if (r := latest.get(_target_key(t, n)))
+                and r.get("deploy_failed") and r.get("attempt", 1) == rnd]
+        if not todo:
+            break
+        print(f"\n↻ 部署失败补跑（第 {rnd} 轮）：{len(todo)} 个目标")
+        go_on = all(scan_one(t, n, rnd + 1) for (t, n) in todo)
+
+    results = [latest[k] for k in (_target_key(t, n) for (t, n) in targets) if k in latest]
     if len(targets) > 1:
         summary_path = write_batch_summary(Path(settings.out_dir), results)
         print(f"\n批量汇总已保存：{summary_path}")

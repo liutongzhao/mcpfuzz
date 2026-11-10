@@ -20,6 +20,11 @@ from mcpfuzz.sink import SinkInferencer
 from mcpfuzz.targetcfg import resolve_target
 
 
+class GatewayNotReady(RuntimeError):
+    """经网关时目标后端没能部署起来（等不到 tools>0 / 连不上）。批量模式据此判"部署失败"，
+    并在整批跑完后补跑一轮（见 cli.main.cmd_scan）——部署失败常是偶发的（下载慢、网关连接抖动）。"""
+
+
 def slugify(name: str) -> str:
     return re.sub(r"[^\w.-]", "_", name or "server")
 
@@ -93,13 +98,15 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
             catalog = fetch_catalog_sync(url, headers, retries=settings.retries, timeout=cat_timeout)
         except Exception as e:
             reporter.emit("connect.fail", error=str(e)[:300])
+            if gw:   # 经网关连不上 = 后端没部署起来
+                raise GatewayNotReady(f"网关后端 {gw_server} 连接失败：{str(e)[:200]}") from e
             raise
 
         # 经网关时，0 工具几乎一定是后端未就绪（网关用自身身份应答），不要静默产出空报告
         if gw and len(catalog.tools) == 0:
             reporter.emit("gateway.error",
                           error=f"后端 {gw_server} 未就绪（工具数为 0，可能仍在冷启动/未连上），已终止本次扫描；请稍后重试")
-            raise RuntimeError(f"网关后端 {gw_server} 未就绪：tools=0")
+            raise GatewayNotReady(f"网关后端 {gw_server} 未就绪：tools=0")
 
         reporter.emit("connect.ok", server_name=catalog.server_name, server_version=catalog.server_version,
                       protocol_version=catalog.protocol_version, tool_count=len(catalog.tools))
@@ -209,11 +216,15 @@ def write_batch_summary(out_dir: Path, results: list[dict]) -> Path:
             "| 目标 | 确认漏洞 | 疑似有 | 疑似无 | 未触达 | 未测成 | 产物 |",
             "|---|---|---|---|---|---|---|"]
     for r in results:
+        tries = r.get("attempt", 1)
         if r.get("error"):
-            lines.append(f"| `{r['target']}` | — | — | — | — | — | 失败：{r['error'][:100]} |")
+            kind = "部署失败" if r.get("deploy_failed") else "失败"
+            extra = f"（共试 {tries} 次）" if tries > 1 else ""
+            lines.append(f"| `{r['target']}` | — | — | — | — | — | {kind}{extra}：{r['error'][:100]} |")
         else:
+            extra = f"（第 {tries} 次部署才成功）" if tries > 1 else ""
             lines.append(f"| `{r['target']}` | {r['confirmed']} | {r.get('suspected', 0)} | {r['clean']} | "
-                         f"{r['unreached']} | {r.get('skipped', 0)} | `{r['run_dir']}` |")
+                         f"{r['unreached']} | {r.get('skipped', 0)} | `{r['run_dir']}`{extra} |")
     text = "\n".join(lines) + "\n"
     path = Path(out_dir) / "batch_summary.md"
     path.write_text(text)
