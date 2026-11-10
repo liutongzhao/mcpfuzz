@@ -12,10 +12,16 @@ services:
   oob:
     image: mcpfuzz-oob:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 512m
 
   gateway:
     image: mcpfuzz-gateway:${IMAGE_TAG:-latest}
     restart: unless-stopped   # 被注入载荷打挂 → 自动拉回（runner 靠 --resume 续跑）
+    # 内存上限：网关现场用 npx/uvx 拉起的个别目标子进程会内存失控（泄漏/加载大数据），
+    # 一个就能吃十几 G 撑爆宿主。设上限 → 失控时由容器自身 cgroup OOM 杀掉该子进程，
+    # 该目标 wait_ready 超时判"部署失败"→补跑/跳过，宿主不受影响。对任意目标通用。
+    # 同机并发多批的关键：N 批 × 3G 可控。正常网关+目标峰值 <2.5G，3G 留余量。
+    mem_limit: 3g
     environment:
       # mcphub 的 Docker 启动默认不建固定账号：首启若没设 ADMIN_PASSWORD 会随机生成并只打到日志。
       # 这里把它定死成与 runner 登录用的同一个密码（首启且无用户时生效；换密码需重建容器使其重新首启）。
@@ -28,6 +34,7 @@ services:
 
   runner:
     image: mcpfuzz-runner:${IMAGE_TAG:-latest}
+    mem_limit: 1g   # 扫描器本体很轻（<100M），上限只为兜底防失控
     depends_on:
       - gateway
       - oob
