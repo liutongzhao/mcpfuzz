@@ -102,6 +102,9 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
                       help="网关空闲关闭超时（按需启动），用作首连冷启动预算（默认 300000）")
     g_gw.add_argument("--gateway-keep-online", dest="gateway_lifecycle", action="store_false", default=None,
                       help="检测后不停用后端（默认：检测时才 enable 上线、用完 disable 释放资源）")
+    g_gw.add_argument("--gateway-launch-map", dest="gateway_launch_map", default=None, metavar="FILE",
+                      help="【仅全网大规模批量用】后端名→启动命令的 JSON（含 launch 字段）。给了则每个目标"
+                           "扫前临时注册到网关、扫完删除；不给（如数据集扫描）则只对预注册后端 enable/disable，不删除")
     g_gw.add_argument("--after-target-cmd", dest="after_target_cmd", default=None, metavar="CMD",
                       help="每个目标扫完（后端已 disable）后执行的本地命令；在进程已停的安全时刻运行，"
                            "不会打断冷启动。典型用途：清网关容器缓存防磁盘占满，例如 "

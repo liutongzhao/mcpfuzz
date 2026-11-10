@@ -58,6 +58,9 @@ class Settings:
     gateway_lifecycle: bool = True         # 检测时才上线：扫前 enable 拉起后端、扫后 disable 杀进程释放资源，
                                            # 避免批量检测时大量 stdio 后端常驻把网关压垮
     gateway_idle_ms: int = 300000          # 网关空闲关闭超时（按需启动）；用作首连冷启动预算
+    gateway_launch_map: str | None = None  # 【仅全网大规模批量用】后端名→启动命令的 JSON 文件。给了才进入
+                                           # 「扫前 add 该后端→扫→扫完 delete」模式；不给(数据集扫描)则保持
+                                           # 预注册后端 enable→扫→disable、绝不删除。
     after_target_cmd: str | None = None    # 每个目标扫完（lifecycle 已 disable）后执行的本地命令；
                                            # 通用收尾钩子，典型用途：清理网关容器内 npm/uv 缓存防磁盘占满。
                                            # 在"后端进程已停"的安全时刻运行，不会打断任何冷启动安装

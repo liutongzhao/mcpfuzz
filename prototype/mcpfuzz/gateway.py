@@ -69,13 +69,33 @@ class GatewayClient:
         return self._req("POST", f"/api/servers/{server}/toggle", {"enabled": True})
 
     def disable(self, server: str) -> dict:
-        """停用并断开后端：变 disconnected。注意 mcphub 的 toggle disable【实测不真正杀 stdio 子进程】，
-        子进程会残留累积吃内存→网关 OOM 反复重启。收尾请用 delete 而非本方法。"""
+        """停用并断开后端：变 disconnected，并结束其 stdio 子进程（干净网关实测 add→disable 后子进程归 0）。
+        数据集扫描的收尾用它（后端保留在网关里，下次再 enable）。
+        注意：对「刚注册、仍在启动中」的后端立即 disable，可能触发 mcphub 内部 Connection closed 导致网关进程崩溃重启。"""
         return self._req("POST", f"/api/servers/{server}/toggle", {"enabled": False})
 
+    def add(self, server: str, command: str, args: list[str], tries: int = 6, wait: float = 10.0) -> None:
+        """注册一个 stdio 后端（仅大规模批量的「加→扫→删」模式使用；数据集扫描不调用）。
+        mcphub 注册即自动启动该后端。网关暂时连不上（如正在重启）时等待后重试，不静默丢弃；
+        已存在则视为成功。重试用尽仍失败则抛 RuntimeError，由调用方判「部署失败」。"""
+        body = {"name": server, "config": {"type": "stdio", "command": command, "args": list(args), "env": {}}}
+        last = ""
+        for _ in range(max(1, tries)):
+            try:
+                self._req("POST", "/api/servers", body)
+                return
+            except RuntimeError as e:   # HTTP 错误：已存在算成功，其余直接上抛
+                if "exist" in str(e).lower() or "已存在" in str(e):
+                    return
+                raise
+            except (urllib.error.URLError, OSError) as e:   # 网关连不上：等它恢复
+                last = str(e)
+                time.sleep(wait)
+        raise RuntimeError(f"注册后端 {server} 失败（网关持续不可用）：{last[:150]}")
+
     def delete(self, server: str) -> dict:
-        """彻底移除后端：从网关删除配置并【终止其 stdio 子进程】。扫完收尾用它，根治 disable 不杀
-        子进程导致的累积吃内存。扫完该后端不再需要；断点续跑靠账本跳过，不依赖网关仍存该后端。"""
+        """彻底移除后端（删除配置并结束其子进程）。仅大规模批量的「加→扫→删」模式在扫完后调用；
+        数据集扫描绝不调用（数据集后端是预先注册好的，只能 enable/disable）。"""
         return self._req("DELETE", f"/api/servers/{server}")
 
     def server_record(self, server: str) -> dict | None:

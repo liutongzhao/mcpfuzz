@@ -71,10 +71,23 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
 
     # 网关集成（可选，不影响检测逻辑）：检测时才上线 + 冷启动适配
     gw, gw_server = _gateway_setup(settings, url, reporter)
+    # 「加→扫→删」模式只在给了启动命令表时开启（仅全网大规模批量）；数据集扫描不给，走下面的 enable/disable
+    launch_map = _load_launch_map(settings.gateway_launch_map) if gw else None
+    adhoc = launch_map is not None
     try:
+        if adhoc:
+            entry = launch_map.get(gw_server) or {}
+            launch = entry.get("launch") or []
+            if not launch:
+                raise GatewayNotReady(f"网关后端 {gw_server} 不在启动命令表中，无法注册")
+            try:
+                gw.add(gw_server, launch[0], launch[1:])
+                reporter.emit("gateway.add", server=gw_server)
+            except Exception as e:
+                raise GatewayNotReady(f"注册网关后端 {gw_server} 失败：{str(e)[:200]}") from e
         # 激活：gateway_lifecycle 下"检测时才上线"——enable 现场拉起 stdio 后端(disconnected→connected)，
         # 用完在 finally 里 disable 释放；非该模式沿用旧的 reload 重置语义(gateway_reset)。
-        if gw and settings.gateway_lifecycle:
+        elif gw and settings.gateway_lifecycle:
             try:
                 gw.enable(gw_server)
                 reporter.emit("gateway.enable", server=gw_server)
@@ -159,17 +172,35 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
                       total=len(param_findings), dry_run=settings.dry_run)
         return findings
     finally:
-        # 收尾：停用释放资源（即使检测中途异常也执行）；非 lifecycle 模式沿用旧的 after-reload
-        if gw and settings.gateway_lifecycle:
+        # 收尾（即使检测中途异常也执行）：
+        #   加→扫→删 模式：删除这个临时注册的后端（结束其进程），网关里始终只有当前这一个；
+        #   数据集模式：只 disable（结束进程、后端保留在网关里），绝不删除；非 lifecycle 沿用 after-reload
+        if adhoc:
             try:
-                # disable 实测会杀掉该后端的 stdio 子进程（干净网关 add 1→disable→子进程归 0 验证过）。
-                # 配合 provision「add 后即全部 disable」，网关任意时刻只连当前这 1 个，扫完 disable 释放。
+                gw.delete(gw_server)
+                reporter.emit("gateway.delete", server=gw_server)
+            except Exception as e:
+                reporter.emit("gateway.error", error=f"删除后端 {gw_server} 失败：{str(e)[:200]}")
+        elif gw and settings.gateway_lifecycle:
+            try:
                 gw.disable(gw_server)
                 reporter.emit("gateway.disable", server=gw_server)
             except Exception as e:
                 reporter.emit("gateway.error", error=f"停用后端 {gw_server} 失败：{str(e)[:200]}")
         elif gw and settings.gateway_reset in ("after", "both"):
             _gateway_reset(gw, gw_server, "after", reporter)
+
+
+_LAUNCH_MAPS: dict[str, dict] = {}
+
+
+def _load_launch_map(path: str | None) -> dict | None:
+    """读「后端名 → {launch: [命令, 参数...]}」表（即批量单元 provision 产出的 namemap.json）；同一进程只读一次。"""
+    if not path:
+        return None
+    if path not in _LAUNCH_MAPS:
+        _LAUNCH_MAPS[path] = json.loads(Path(path).read_text(encoding="utf-8"))
+    return _LAUNCH_MAPS[path]
 
 
 def _gateway_setup(settings, url, reporter):

@@ -1,24 +1,20 @@
 #!/bin/sh
-# runner 容器入口：把本批清单【分片】灌进网关并扫描。
-#
-# 为什么分片：mcphub 网关内存随注册后端数增长，一次灌整批(~539)会涨到 mem_limit → OOM 反复重启
-# （2026-11-10 实测网关重启 140+ 次、runner 大面积连接失败、84% 目标被误判失败）。测试批 5 个后端时零重启。
-# 分片轮转：每片 SHARD_SIZE 个，provision(reset 清空网关、只留本片)→scan 本片→清空→下一片，
-# 网关任何时刻只管 SHARD_SIZE 个后端，内存低、不 OOM、连接稳。
-#
-# 账本 _done.jsonl 跨片统一累积（同 out_dir+batch-name），--resume 断点续跑（含容器重启）；
-# namemap 跨片合并；全部片跑完再用全量 targets 生成一次完整 batch_summary。
+# runner 容器入口（全网大规模批量专用）：
+#   1) provision：清空本 cell 网关、铸 bearer key、产出 targets.txt 与 namemap.json（含每个目标的启动命令）。
+#      不预先注册任何后端——mcphub 一注册就启动后端，批量预注册会把网关压垮/弄崩（2026-11-10 实测）。
+#   2) scan：带 --gateway-launch-map，扫描器对每个目标「临时注册 → 等就绪 → 扫 → 删除」，
+#      网关里任何时刻只有当前这一个后端。数据集扫描不走这里，仍是预注册后端 enable/disable。
+# 账本 _done.jsonl + --resume 支持断点续跑；整批跑完后对部署失败的目标自动补跑一轮。
 set -eu
 
 : "${BATCH:?必须设置 BATCH（批次名）}"
 GATEWAY_URL="${GATEWAY_URL:-http://gateway:3000}"
 GW_USER="${GATEWAY_USER:-admin}"
 GW_PASS="${GATEWAY_PASSWORD:-admin123}"
-SHARD_SIZE="${SHARD_SIZE:-50}"
 
 mkdir -p /work/runs
 
-# —— 结果属主跟随宿主用户（root 降权；见上一版说明）——
+# —— 结果属主跟随宿主用户：以批次清单(宿主用户上传)的 uid:gid 降权运行，产物归宿主用户 ——
 if [ "$(id -u)" = 0 ] && [ -z "${_CELL_DROPPED:-}" ]; then
   RUN_AS="${RUN_AS:-$(stat -c '%u:%g' /work/batch.jsonl)}"
   if [ "${RUN_AS%%:*}" != 0 ]; then
@@ -30,57 +26,32 @@ if [ "$(id -u)" = 0 ] && [ -z "${_CELL_DROPPED:-}" ]; then
   fi
 fi
 
-# —— 切片（只切有效行：去空行/注释，保证每片都是 SHARD_SIZE 个真目标）——
-SHARD_DIR=/work/shards
-rm -rf "$SHARD_DIR"; mkdir -p "$SHARD_DIR"
-grep -vE '^[[:space:]]*($|#)' /work/batch.jsonl > "$SHARD_DIR/all.jsonl" || true
-total=$(wc -l < "$SHARD_DIR/all.jsonl" | tr -d ' ')
-split -l "$SHARD_SIZE" -d -a 4 "$SHARD_DIR/all.jsonl" "$SHARD_DIR/shard_"
-nshard=$(ls "$SHARD_DIR"/shard_* 2>/dev/null | wc -l | tr -d ' ')
-echo "[cell:$BATCH] 共 $total 个目标，按每片 $SHARD_SIZE 个切成 $nshard 片。"
-: > "$SHARD_DIR/targets_all.txt"
+echo "[cell:$BATCH] 1/2 provision：清空网关 + 铸 key + 生成目标与启动命令表 …"
+python3 /app/provision.py \
+  --batch /work/batch.jsonl \
+  --gateway "$GATEWAY_URL" \
+  --user "$GW_USER" \
+  --password "$GW_PASS" \
+  --targets-out /work/targets.txt \
+  --map-out /work/runs/namemap.json \
+  --bearer-out /work/bearer.txt
 
-i=0
-for sh in "$SHARD_DIR"/shard_*; do
-  i=$((i+1))
-  cnt=$(wc -l < "$sh" | tr -d ' ')
-  echo "[cell:$BATCH] ===== 片 $i/$nshard（$cnt 个）provision（清空网关、只装本片）====="
-  rm -f /work/targets.txt
-  if ! python3 /app/provision.py \
-        --batch "$sh" --gateway "$GATEWAY_URL" --user "$GW_USER" --password "$GW_PASS" \
-        --targets-out /work/targets.txt --map-out "$SHARD_DIR/map_$i.json" \
-        --bearer-out /work/bearer.txt --force; then
-    echo "[cell:$BATCH] 片 $i provision 失败，跳过本片。"
-    continue
-  fi
-  # 合并 namemap（跨片累积，供 collect 回溯身份）
-  python3 - "$SHARD_DIR/map_$i.json" <<'PY' || true
-import json, os, sys
-p = "/work/runs/namemap.json"
-a = json.load(open(p)) if os.path.exists(p) else {}
-try:
-    a.update(json.load(open(sys.argv[1])))
-except Exception:
-    pass
-json.dump(a, open(p, "w"), ensure_ascii=False, indent=2)
-PY
-  [ -s /work/targets.txt ] || { echo "[cell:$BATCH] 片 $i 无 targets，跳过。"; continue; }
-  cat /work/targets.txt >> "$SHARD_DIR/targets_all.txt"
-  BEARER="$(cat /work/bearer.txt 2>/dev/null || true)"
-  set -- scan --batch /work/targets.txt --batch-name "$BATCH" \
-     --gateway "$GATEWAY_URL" --gateway-user "$GW_USER" --gateway-password "$GW_PASS" \
-     --gateway-reset before --resume --yes -o /work/runs
-  [ -n "$BEARER" ] && set -- "$@" --header "Authorization: Bearer $BEARER"
-  [ -n "${TOOL_TIMEOUT:-}" ] && set -- "$@" --tool-timeout "$TOOL_TIMEOUT"
-  echo "[cell:$BATCH] ===== 片 $i/$nshard 扫描 $cnt 个 ====="
-  python3 -m mcpfuzz.cli.main "$@" || echo "[cell:$BATCH] 片 $i scan 返回非 0，继续下一片。"
-done
+BEARER="$(cat /work/bearer.txt 2>/dev/null || true)"
 
-# —— 全部片跑完：用全量 targets 跑一次 --resume（已完成全跳过、不连网关），生成完整 batch_summary ——
-if [ -s "$SHARD_DIR/targets_all.txt" ]; then
-  echo "[cell:$BATCH] ===== 汇总：生成全量 batch_summary ====="
-  python3 -m mcpfuzz.cli.main scan --batch "$SHARD_DIR/targets_all.txt" --batch-name "$BATCH" \
-     --gateway "$GATEWAY_URL" --gateway-user "$GW_USER" --gateway-password "$GW_PASS" \
-     --resume --yes -o /work/runs || echo "[cell:$BATCH] 汇总步骤返回非 0（账本已完整，可忽略）。"
+echo "[cell:$BATCH] 2/2 开始批量扫描（逐个临时注册 → 扫 → 删除）…"
+set -- scan \
+  --batch /work/targets.txt --batch-name "$BATCH" \
+  --gateway "$GATEWAY_URL" \
+  --gateway-user "$GW_USER" --gateway-password "$GW_PASS" \
+  --gateway-launch-map /work/runs/namemap.json \
+  --resume --yes \
+  -o /work/runs
+if [ -n "$BEARER" ]; then
+  set -- "$@" --header "Authorization: Bearer $BEARER"
 fi
-echo "[cell:$BATCH] 全部 $nshard 片完成。"
+# 单工具总时长看门狗：默认镜像内置 900s；设了 TOOL_TIMEOUT 才覆盖（<=0 关闭）
+if [ -n "${TOOL_TIMEOUT:-}" ]; then
+  set -- "$@" --tool-timeout "$TOOL_TIMEOUT"
+fi
+
+exec python3 -m mcpfuzz.cli.main "$@"

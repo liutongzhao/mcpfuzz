@@ -7,9 +7,9 @@
 流程：
   1. 轮询登录网关（兼作就绪探测，等 mcphub 冷启动起来）。
   2. 首次运行时清空网关已有后端，保证本 cell 只含这一批（restart 续跑时不重清）。
-  3. 每条 name 消毒成网关合法后端名；launch[0]=command、launch[1:]=args，拼成 stdio 配置。
-  4. POST /api/servers/batch 分块批量添加（某块失败则逐条重试，部分失败不中断）。
-  5. 写 targets.txt（每行 /mcp/{后端名}，给 mcpfuzz --batch 用）、namemap.json（后端名→原始身份+期望工具）。
+  3. 每条 name 消毒成网关合法后端名。
+  4. 【不预先注册后端】——扫描器用 --gateway-launch-map 按 namemap 里的 launch 逐个临时注册、扫完删除。
+  5. 写 targets.txt（每行 /mcp/{后端名}，给 mcpfuzz --batch 用）、namemap.json（后端名→原始身份+launch+期望工具）。
   6. 尽力铸一把 bearer key 写到 bearer.txt（给 MCP 端点鉴权用）；铸不出则回退登录 JWT。
 
 幂等：targets.txt 已存在且非空时跳过灌清单（容器 restart 续跑时不重复灌）。纯标准库。
@@ -127,7 +127,6 @@ def main():
     ap.add_argument("--bearer-out", default=None, help="输出 bearer.txt（给 MCP 端点鉴权）")
     ap.add_argument("--no-reset", action="store_true", help="不清空网关已有后端")
     ap.add_argument("--force", action="store_true", help="即使 targets.txt 已存在也重灌")
-    ap.add_argument("--chunk", type=int, default=10, help="批量添加每块条数（调小以控 add 后 autoConnect 的瞬时子进程峰值）")
     args = ap.parse_args()
 
     tout, mout = Path(args.targets_out), Path(args.map_out)
@@ -165,52 +164,22 @@ def main():
     if not args.no_reset:
         reset_servers(args.gateway, token)
 
-    # 清单 → 网关 stdio 配置
-    used, servers, mapping = set(), [], {}
+    # 清单 → 后端名 + 启动命令表。【不预先注册任何后端】：
+    # mcphub 一注册就会启动该后端，一次注册几十上百个会把网关压垮；而「刚注册还在启动就 disable」
+    # 又会触发 mcphub 内部 Connection closed 使网关进程崩溃（2026-11-10 实测）。所以改为扫描时由
+    # 扫描器按 namemap 里的 launch 临时注册当前这一个、扫完删除（mcpfuzz --gateway-launch-map）。
+    used, mapping = set(), {}
     for d in entries:
-        launch = d["launch"]
         gw = sanitize(d["name"], used)
-        # enabled=False：注册时【不自动连接】。mcphub 默认 enabled=true 会把所有注册后端全部
-        # 自动拉起成常驻子进程（实测灌 50 个→70 子进程→吃满 3G→OOM 重启），使"检测时才上线"失效。
-        # 设 false 后 mcphub 只登记不拉起，由 runner 扫到某目标时 enable 单独拉起、扫完 disable。
-        servers.append({"name": gw, "enabled": False, "config": {
-            "type": "stdio", "command": launch[0], "args": launch[1:], "env": {}}})
         mapping[gw] = {"name": d["name"], "identifier": d.get("identifier"),
-                       "registryType": d.get("registryType"), "launch": launch,
+                       "registryType": d.get("registryType"), "launch": d["launch"],
                        "tools_expected": d.get("tool_names"),
                        "tools_count_expected": d.get("tools_count")}
 
-    # 分块批量添加；某块失败则逐条重试
-    added = 0
-    for i in range(0, len(servers), args.chunk):
-        chunk = servers[i:i + args.chunk]
-        try:
-            _req(args.gateway, "POST", "/api/servers/batch", {"servers": chunk}, token=token, timeout=60)
-            added += len(chunk)
-        except Exception as e:
-            print(f"  批量第 {i // args.chunk + 1} 块失败，改逐条：{str(e)[:120]}", flush=True)
-            for s in chunk:
-                try:
-                    _req(args.gateway, "POST", "/api/servers", s, token=token, timeout=30)
-                    added += 1
-                except Exception as e2:
-                    print(f"    添加 {s['name']} 失败（忽略）：{str(e2)[:100]}", flush=True)
-        # 关键：add 后立即禁用本块。mcphub 对注册的后端会 autoConnect 全部拉起成常驻 stdio 子进程
-        # （实测忽略请求里的 enabled=false），一次灌几十个会让「尚未轮到检测的」后端一直连着、
-        # 子进程累积到吃满内存 → 网关 OOM 反复重启 → runner 大面积连接失败。这里 add 完立刻 disable
-        # （实测 disable 会杀子进程，趁 npx 冷启动未完成前标记 disabled 可把峰值压到很低），
-        # 使所有后端回到「不连」状态；扫描时再由 runner 逐个 enable → 扫 → disable，网关任意时刻只连 1 个。
-        for s in chunk:
-            try:
-                _req(args.gateway, "POST", f"/api/servers/{s['name']}/toggle",
-                     {"enabled": False}, token=token, timeout=15)
-            except Exception:
-                pass
-
-    tout.write_text("\n".join(f"{args.gateway.rstrip('/')}/mcp/{s['name']}" for s in servers) + "\n",
+    tout.write_text("\n".join(f"{args.gateway.rstrip('/')}/mcp/{g}" for g in mapping) + "\n",
                     encoding="utf-8")
     mout.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[provision] 完成：尝试 {len(servers)} 个，确认约 {added} 个；"
+    print(f"[provision] 完成：{len(mapping)} 个目标（未预注册，扫描时逐个临时注册）；"
           f"targets→{tout}  map→{mout}", flush=True)
 
 
