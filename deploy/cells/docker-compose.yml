@@ -41,6 +41,8 @@ services:
     restart: on-failure
     environment:
       BATCH: ${BATCH:-sample}
+      # 分片大小：网关一次只注册这么多后端（防 mcphub 后端过多→内存涨爆→OOM 反复重启）。默认 50。
+      SHARD_SIZE: ${SHARD_SIZE:-50}
       GATEWAY_URL: http://gateway:3000
       GATEWAY_USER: ${GATEWAY_USER:-admin}
       GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:-admin123}

@@ -127,7 +127,7 @@ def main():
     ap.add_argument("--bearer-out", default=None, help="输出 bearer.txt（给 MCP 端点鉴权）")
     ap.add_argument("--no-reset", action="store_true", help="不清空网关已有后端")
     ap.add_argument("--force", action="store_true", help="即使 targets.txt 已存在也重灌")
-    ap.add_argument("--chunk", type=int, default=100, help="批量添加每块条数")
+    ap.add_argument("--chunk", type=int, default=10, help="批量添加每块条数（调小以控 add 后 autoConnect 的瞬时子进程峰值）")
     args = ap.parse_args()
 
     tout, mout = Path(args.targets_out), Path(args.map_out)
@@ -170,7 +170,10 @@ def main():
     for d in entries:
         launch = d["launch"]
         gw = sanitize(d["name"], used)
-        servers.append({"name": gw, "config": {
+        # enabled=False：注册时【不自动连接】。mcphub 默认 enabled=true 会把所有注册后端全部
+        # 自动拉起成常驻子进程（实测灌 50 个→70 子进程→吃满 3G→OOM 重启），使"检测时才上线"失效。
+        # 设 false 后 mcphub 只登记不拉起，由 runner 扫到某目标时 enable 单独拉起、扫完 disable。
+        servers.append({"name": gw, "enabled": False, "config": {
             "type": "stdio", "command": launch[0], "args": launch[1:], "env": {}}})
         mapping[gw] = {"name": d["name"], "identifier": d.get("identifier"),
                        "registryType": d.get("registryType"), "launch": launch,
@@ -192,6 +195,17 @@ def main():
                     added += 1
                 except Exception as e2:
                     print(f"    添加 {s['name']} 失败（忽略）：{str(e2)[:100]}", flush=True)
+        # 关键：add 后立即禁用本块。mcphub 对注册的后端会 autoConnect 全部拉起成常驻 stdio 子进程
+        # （实测忽略请求里的 enabled=false），一次灌几十个会让「尚未轮到检测的」后端一直连着、
+        # 子进程累积到吃满内存 → 网关 OOM 反复重启 → runner 大面积连接失败。这里 add 完立刻 disable
+        # （实测 disable 会杀子进程，趁 npx 冷启动未完成前标记 disabled 可把峰值压到很低），
+        # 使所有后端回到「不连」状态；扫描时再由 runner 逐个 enable → 扫 → disable，网关任意时刻只连 1 个。
+        for s in chunk:
+            try:
+                _req(args.gateway, "POST", f"/api/servers/{s['name']}/toggle",
+                     {"enabled": False}, token=token, timeout=15)
+            except Exception:
+                pass
 
     tout.write_text("\n".join(f"{args.gateway.rstrip('/')}/mcp/{s['name']}" for s in servers) + "\n",
                     encoding="utf-8")

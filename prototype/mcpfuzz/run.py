@@ -162,6 +162,8 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
         # 收尾：停用释放资源（即使检测中途异常也执行）；非 lifecycle 模式沿用旧的 after-reload
         if gw and settings.gateway_lifecycle:
             try:
+                # disable 实测会杀掉该后端的 stdio 子进程（干净网关 add 1→disable→子进程归 0 验证过）。
+                # 配合 provision「add 后即全部 disable」，网关任意时刻只连当前这 1 个，扫完 disable 释放。
                 gw.disable(gw_server)
                 reporter.emit("gateway.disable", server=gw_server)
             except Exception as e:

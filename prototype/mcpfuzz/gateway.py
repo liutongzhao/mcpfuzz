@@ -69,8 +69,14 @@ class GatewayClient:
         return self._req("POST", f"/api/servers/{server}/toggle", {"enabled": True})
 
     def disable(self, server: str) -> dict:
-        """停用并断开后端：杀进程、释放资源，变 disconnected。用于检测完收尾，避免大量后端常驻把网关压垮。"""
+        """停用并断开后端：变 disconnected。注意 mcphub 的 toggle disable【实测不真正杀 stdio 子进程】，
+        子进程会残留累积吃内存→网关 OOM 反复重启。收尾请用 delete 而非本方法。"""
         return self._req("POST", f"/api/servers/{server}/toggle", {"enabled": False})
+
+    def delete(self, server: str) -> dict:
+        """彻底移除后端：从网关删除配置并【终止其 stdio 子进程】。扫完收尾用它，根治 disable 不杀
+        子进程导致的累积吃内存。扫完该后端不再需要；断点续跑靠账本跳过，不依赖网关仍存该后端。"""
+        return self._req("DELETE", f"/api/servers/{server}")
 
     def server_record(self, server: str) -> dict | None:
         """查单个后端状态：用单后端端点 GET /api/servers/{name}，避开全量 /api/servers——
