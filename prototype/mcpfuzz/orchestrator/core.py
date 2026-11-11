@@ -165,16 +165,32 @@ class Orchestrator:
                                    param_count=len(sink_params))
                 findings += self._attack_tool(tool, plan, sink_params, timeout, poll_window, retries)
             except ToolBudgetExceeded:
-                elapsed = time.time() - t_tool
-                note = f"单工具超时（预算 {int(tool_budget)}s，用时 {elapsed:.0f}s）已放弃，换下一个工具"
-                self.reporter.emit("attack.tool.timeout", tool=tool_name, index=idx, total=total,
-                                   seconds=round(elapsed, 1), budget=tool_budget)
-                _reset_agent_loop_after_abort()   # 智能体常驻循环可能停在半截，丢弃重建免污染后续工具
-                findings += [Finding(tool_name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
-                             for ps in sink_params]
+                findings += self._on_tool_timeout(tool_name, idx, total, t_tool, tool_budget, sink_params)
+            except BaseException as e:   # noqa: BLE001
+                # 看门狗中断若在 MCP/anyio 会话(async with open_session)里触发，anyio 清理子任务时会把它
+                # 包进 BaseExceptionGroup —— 裸 `except ToolBudgetExceeded` 接不住“装着它的盒子”，会漏到
+                # 进程层崩掉 runner。这里拆盒子：组里只要含看门狗中断就按“单工具超时”同样收尾、继续下一个；
+                # 不含（真·错误 / KeyboardInterrupt 等）则原样抛出，绝不吞。
+                budget_exc = None
+                if isinstance(e, BaseExceptionGroup):
+                    budget_exc, _rest = e.split(ToolBudgetExceeded)
+                if budget_exc is None:
+                    raise
+                findings += self._on_tool_timeout(tool_name, idx, total, t_tool, tool_budget, sink_params)
             finally:
                 _disarm_tool_alarm(armed)
         return findings
+
+    def _on_tool_timeout(self, tool_name, idx, total, t_tool, tool_budget, sink_params) -> list:
+        """单工具超时的统一收尾：报事件、丢弃智能体残留事件循环、把该工具所有参数记 SKIPPED（未测成）。
+        看门狗中断无论是裸抛的 ToolBudgetExceeded，还是被 anyio 包成的 BaseExceptionGroup，都走这里。"""
+        elapsed = time.time() - t_tool
+        note = f"单工具超时（预算 {int(tool_budget)}s，用时 {elapsed:.0f}s）已放弃，换下一个工具"
+        self.reporter.emit("attack.tool.timeout", tool=tool_name, index=idx, total=total,
+                           seconds=round(elapsed, 1), budget=tool_budget)
+        _reset_agent_loop_after_abort()   # 智能体常驻循环可能停在半截，丢弃重建免污染后续工具
+        return [Finding(tool_name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
+                for ps in sink_params]
 
     def _build_plan_sync(self, tool, use_agent, plan_cache, agent_cache):
         """序列构建。先判"是否需要前置"：用良性值直接试调一次目标工具——
