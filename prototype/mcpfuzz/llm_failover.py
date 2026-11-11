@@ -5,8 +5,10 @@
   某 provider 失败就给它记一段冷却期（COOLDOWN_SEC），冷却中的 provider 在后续调用里被降到
   本轮最后（仍兜底尝试、但不抢优先、也不白等它的超时）；任一 provider 成功即**清除它的冷却**。
   → 主模型临时挂掉时自动用备用；冷却一过，下次调用又先试主模型，**一旦恢复立刻切回主模型**。
-- current_provider()/mark_current_down(): 供多步智能体的 ChatOpenAI 路径共享同一「当前该优先用谁」
-  的判断——主模型恢复后，智能体单例也随之重建回主模型。
+- current_provider()/mark_current_down(): 暴露「当前该优先用谁」给需要的调用方（如诊断/日志）。
+- agent_provider(): 序列构建智能体（ChatOpenAI 路径）**固定**用的 provider（minimax），与上面的
+  三级切换解耦——该路径单次运行内不做级联兜底，绑死最稳定模型，避免主模型 429 把序列构建打成
+  fallback(无大模型)。sink 推断/规划仍走 chat() 的三级切换，不受影响。
 - 一轮（所有 provider，含冷却中的）全失败 → 抛 AllModelsUnavailable（批量层据此暂停，--resume 续跑）。
 
 设计原则：对调用方只暴露"拿到一个可用模型的回复"或"全挂了（AllModelsUnavailable）"两种结果，
@@ -58,6 +60,18 @@ def current_provider() -> dict:
     with _lock:
         order = _attempt_order(time.monotonic())
         return PROVIDERS[order[0] if order else 0]
+
+
+def agent_provider() -> dict:
+    """序列构建智能体（ChatOpenAI 路径）**固定**使用的 provider，与 chat() 的三级切换解耦。
+    返回 llm_config.AGENT_PROVIDER_NAME 指定的那个（minimax）；找不到则回退 PROVIDERS 末位（兜底层）。
+    这条路径在单次 agent 运行内不做级联兜底，故绑定到最稳定的模型，避免主模型 429 把序列构建打成
+    fallback(无大模型)。sink 推断/规划不受影响，仍走 current_provider()/chat() 的优先级+冷却切换。"""
+    from mcpfuzz.llm_config import AGENT_PROVIDER_NAME
+    for p in PROVIDERS:
+        if p.get("name") == AGENT_PROVIDER_NAME:
+            return p
+    return PROVIDERS[-1] if PROVIDERS else {}
 
 
 def mark_current_down(reason: str = "") -> dict | None:

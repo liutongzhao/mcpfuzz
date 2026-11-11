@@ -213,17 +213,19 @@ def reset_model():
 
 
 def _make_model(settings):
-    """返回进程内复用的 ChatOpenAI 单例，**按 llm_failover 的当前 provider 构建**。
+    """返回进程内复用的 ChatOpenAI 单例，**固定按 llm_failover.agent_provider()（minimax）构建**。
 
     为什么单例：ChatOpenAI 的 httpx 异步客户端在首次使用时绑定到当时的事件循环（即常驻的
     agent 事件循环，见 core._AGENT_LOOP），跨所有工具/服务复用同一个即可；若每工具新建一个
     ChatOpenAI，会在该循环上累积大量 httpx 客户端（socket/FD）直到进程退出。
 
-    多模型故障切换：当 curl 路径（sink/规划兜底）切到了备用 provider（黏性游标前移），这里会
-    发现 provider 变了并**重建**单例指向新模型，使多步智能体随之切换，不再打死的那个。"""
+    为什么固定走 minimax：这条 ChatOpenAI 路径在单次 agent 运行内**不做**三级级联兜底，主模型
+    ai-pixel 一旦 429，整条序列构建就退回 schema 单步（fallback(无大模型)）。故绑定到最稳定、
+    已实测支持 function calling 的 minimax（见 llm_config.AGENT_PROVIDER_NAME）。sink 推断/规划
+    仍走 chat() 的三级切换（ai-pixel→deepseek→minimax），与此解耦、互不影响。"""
     global _MODEL, _MODEL_PROVIDER
     from mcpfuzz import llm_failover
-    prov = llm_failover.current_provider()
+    prov = llm_failover.agent_provider()
     if _MODEL is not None and _MODEL_PROVIDER == prov["name"]:
         return _MODEL
     from langchain_openai import ChatOpenAI
