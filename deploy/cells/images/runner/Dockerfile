@@ -9,6 +9,13 @@
 # 基础镜像用成熟的 3.12（wheel 齐全）。换依赖时：在 venv 里看新版本号，同步下面这行。
 FROM python:3.12-slim
 
+# 装 curl：LLM 客户端(llm_failover._curl_one)用 subprocess 调 curl 发补全请求
+# （故意不用 python urllib——该中转的 SSL 对 urllib 会断，见 llmclient.py 注释）。
+# slim 基镜像不带 curl，漏装会导致 runner 内所有 LLM 调用失败、全程降级成无模型兜底（假跑）。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 # 用国内镜像源（清华）装依赖——pypi.org 在国内 SSL 常被打断(UNEXPECTED_EOF)，会被 pip 误报成
 # "没有满足的版本/ResolutionImpossible"。换镜像源后稳定。--retries/--timeout 再兜一层抖动。
 RUN pip install --no-cache-dir \
