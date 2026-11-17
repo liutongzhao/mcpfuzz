@@ -35,7 +35,7 @@
 | `deploy/infra/oob/` | OOB 带外回连采集器 | — | 是 |
 | `deploy/batches/` | 已冻结批次的记录，一批一个子目录，冻结后只读 | 进行中的批次 | 是 |
 | `dataset/` | CVE/GHSA/OSV 漏洞数据集流水线：`download.py`→`collect.py`→`classify.py`→`analyze.py`，产物写到 `data/` | 数据本身 | 是（`llm_config.py` 含 key，除外） |
-| `data/` | 数据集流水线产物（`raw/`、`candidates.*`、`labels*`、`analysis/`）和 ground truth（`groundtruth/`：数据集总表、检测结果、正负样本清单、定型检测日志） | 代码 | 否 |
+| `data/` | 数据集流水线产物（`raw/`、`candidates.*`、`labels*`、`analysis/`）、ground truth（`groundtruth/`：数据集总表、检测结果、正负样本清单、定型检测日志）、服务器归档（`server_archive/`：从检测服务器撤下的实验数据冷备，一台一次一个 tar.gz） | 代码 | 否 |
 | `docs/` | 中文设计文档（各模块设计、判定方法论、漏洞类型）、论文资料（框架、方法讨论、实验计划、引言草稿）、`参考论文/` PDF | 代码、数据 | 是（`参考论文/` 除外） |
 | `research_notes/` | 相关工作和 baseline 工具调研 | 自己的设计文档（放 `docs/`） | 是 |
 | `runs/` | `calchas scan` 在仓库根运行时的默认输出 | — | 否 |
