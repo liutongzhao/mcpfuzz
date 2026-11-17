@@ -13,8 +13,9 @@ import asyncio
 import re
 import time
 
-from mcpfuzz.driver import call_on
-from mcpfuzz.sink.types import AI, CODE, PT, SSRF, W_MED
+from calchas.__about__ import MARKER
+from calchas.driver import call_on
+from calchas.sink.types import AI, CODE, PT, SSRF, W_MED
 
 from .extract import extract_value
 from .types import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
@@ -193,7 +194,7 @@ def _shaped_args(base_args, prior, value, placement="value"):
     param = getattr(prior, "param", None)
     if (param is not None and t in ("string", "union", "unknown")
             and (param.pattern or param.str_format or param.min_length)):
-        from mcpfuzz import valuegen
+        from calchas import valuegen
         shaped = valuegen.inject_value(param, value)
         if shaped is None:
             return None
@@ -205,7 +206,7 @@ def _shaped_args(base_args, prior, value, placement="value"):
             v.append("x")
     elif t == "object":
         # P3：object 既测 value 位 {键:载荷}，也测 key 位 {载荷:值}（env 变量名/HTTP 头名型 sink）
-        v = {value: "mcpfuzz"} if placement == "key" else {"mcpfuzz": value}
+        v = {value: MARKER} if placement == "key" else {MARKER: value}
     else:
         v = value
     return {**base_args, prior.param_path: v}

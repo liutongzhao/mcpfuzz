@@ -11,13 +11,14 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from mcpfuzz.driver import fetch_catalog_sync
-from mcpfuzz.oracle import Oracle
-from mcpfuzz.orchestrator import (CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED,
+from calchas.__about__ import APP_NAME
+from calchas.driver import fetch_catalog_sync
+from calchas.oracle import Oracle
+from calchas.orchestrator import (CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED,
                                    Orchestrator)
-from mcpfuzz.report import render_markdown
-from mcpfuzz.sink import SinkInferencer
-from mcpfuzz.targetcfg import resolve_target
+from calchas.report import render_markdown
+from calchas.sink import SinkInferencer
+from calchas.targetcfg import resolve_target
 
 
 class GatewayNotReady(RuntimeError):
@@ -207,7 +208,7 @@ def _gateway_setup(settings, url, reporter):
     """按 settings 建 GatewayClient 并定位后端名；未配置或无法定位则返回 (None, None)。"""
     if not settings.gateway_base:
         return None, None
-    from mcpfuzz.gateway import GatewayClient, server_name_from_url
+    from calchas.gateway import GatewayClient, server_name_from_url
     server = settings.gateway_server or server_name_from_url(url)
     if not server:
         reporter.emit("gateway.error", error=f"无法从 URL 解析后端名，且未给 --gateway-server：{url}")
@@ -243,7 +244,7 @@ def read_batch_file(path: str) -> list[str]:
 
 def write_batch_summary(out_dir: Path, results: list[dict]) -> Path:
     """results: [{"target":..,"run_dir":..,"confirmed":..,"clean":..,"unreached":..,"error":..}]"""
-    lines = ["# MCPFuzz 批量扫描汇总", "",
+    lines = [f"# {APP_NAME} 批量扫描汇总", "",
             f"- 生成时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
             f"- 目标数：{len(results)}", "",
             "| 目标 | 确认漏洞 | 疑似有 | 疑似无 | 未触达 | 未测成 | 产物 |",

@@ -10,11 +10,11 @@ import re
 import sys
 from pathlib import Path
 
-from mcpfuzz.driver import fetch_catalog_sync
-from mcpfuzz.oracle import Oracle
-from mcpfuzz.orchestrator import CONFIRMED, LIKELY_CLEAN, UNREACHED, Orchestrator
-from mcpfuzz.sink import SinkInferencer
-from mcpfuzz.targetcfg import resolve_target
+from calchas.driver import fetch_catalog_sync
+from calchas.oracle import Oracle
+from calchas.orchestrator import CONFIRMED, LIKELY_CLEAN, UNREACHED, Orchestrator
+from calchas.sink import SinkInferencer
+from calchas.targetcfg import resolve_target
 
 OUT = Path(__file__).resolve().parent / "out"
 

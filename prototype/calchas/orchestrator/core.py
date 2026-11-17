@@ -9,9 +9,9 @@ import signal
 import time
 from pathlib import Path
 
-from mcpfuzz.driver import call_on, open_session, ping
-from mcpfuzz.llm_failover import AllModelsUnavailable
-from mcpfuzz.payload import PayloadSynthesizer
+from calchas.driver import call_on, open_session, ping
+from calchas.llm_failover import AllModelsUnavailable
+from calchas.payload import PayloadSynthesizer
 
 from . import agent, planner
 from .executor import run_tool

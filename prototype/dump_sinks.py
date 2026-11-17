@@ -10,9 +10,9 @@ import re
 import sys
 from pathlib import Path
 
-from mcpfuzz.driver import fetch_catalog_sync
-from mcpfuzz.sink import SinkInferencer
-from mcpfuzz.targetcfg import resolve_target
+from calchas.driver import fetch_catalog_sync
+from calchas.sink import SinkInferencer
+from calchas.targetcfg import resolve_target
 
 OUT = Path(__file__).resolve().parent / "out"
 

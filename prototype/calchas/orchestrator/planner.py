@@ -9,8 +9,8 @@ import json
 import re
 from pathlib import Path
 
-from mcpfuzz.llmclient import complete
-from mcpfuzz.llm_failover import AllModelsUnavailable
+from calchas.llmclient import complete
+from calchas.llm_failover import AllModelsUnavailable
 
 from .types import Plan, Step
 
@@ -53,7 +53,7 @@ def _fallback_literal(param):
     """给参数一个满足其声明约束的良性值。委托给约束感知生成器 valuegen.benign_value
     （确定性阶梯：default/example/enum → format → pattern前缀 → 名字启发 → 类型兜底+长度/数值界收尾）。
     通用、由参数自身 schema 约束驱动，不针对任何服务器。见 docs/参数值生成优化方案.md。"""
-    from mcpfuzz import valuegen
+    from calchas import valuegen
     return valuegen.benign_value(param)
 
 

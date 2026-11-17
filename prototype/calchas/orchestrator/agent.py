@@ -17,7 +17,7 @@ import json
 import re
 from pathlib import Path
 
-from mcpfuzz.llm_failover import AllModelsUnavailable
+from calchas.llm_failover import AllModelsUnavailable
 from . import planner
 from .types import Plan, Step
 
@@ -247,7 +247,7 @@ def _make_model(settings):
     已实测支持 function calling 的 minimax（见 llm_config.AGENT_PROVIDER_NAME）。sink 推断/规划
     仍走 chat() 的三级切换（ai-pixel→deepseek→minimax），与此解耦、互不影响。"""
     global _MODEL, _MODEL_PROVIDER
-    from mcpfuzz import llm_failover
+    from calchas import llm_failover
     prov = llm_failover.agent_provider()
     if _MODEL is not None and _MODEL_PROVIDER == prov["name"]:
         return _MODEL

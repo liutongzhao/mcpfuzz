@@ -3,8 +3,8 @@
 - OOB：真实端到端——对 git 靶机(例子)发一条命令注入载荷，判定器应查到回连并判"确认"。
 - 回显：单元验证——给 observe_response 喂含/不含 marker 的文本，验证匹配逻辑。
 """
-from mcpfuzz.driver import call_tool_sync
-from mcpfuzz.oracle import CONFIRMED, NOT_TRIGGERED, Oracle
+from calchas.driver import call_tool_sync
+from calchas.oracle import CONFIRMED, NOT_TRIGGERED, Oracle
 
 GIT = "http://43.133.80.249:20001/mcp"   # 测试用例（例子），不进入任何检测逻辑
 

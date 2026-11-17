@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import re
 
-from mcpfuzz.llmclient import complete
+from calchas.llmclient import complete
 
 SYSTEM_EXTRACT = ("You extract one value from an MCP tool response. "
                   "Given the response and a description of what to extract, return ONLY the raw value "

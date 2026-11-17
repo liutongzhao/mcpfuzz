@@ -1,7 +1,7 @@
 """载荷合成自测（纯单元，不发请求、不连网络）：构造类别软先验 → 看生成的探针套件。"""
-from mcpfuzz.oracle import Oracle
-from mcpfuzz.payload import PayloadSynthesizer
-from mcpfuzz.sink.types import AI, CI, FLOOR, PT, SSRF, ParamSinkPrior
+from calchas.oracle import Oracle
+from calchas.payload import PayloadSynthesizer
+from calchas.sink.types import AI, CI, FLOOR, PT, SSRF, ParamSinkPrior
 
 synth = PayloadSynthesizer(Oracle())
 

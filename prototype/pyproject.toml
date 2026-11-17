@@ -1,7 +1,7 @@
 [project]
-name = "mcpfuzz"
+name = "calchas"
 version = "0.1.0"
-description = "MCP 服务器黑盒注入漏洞检测 CLI"
+description = "Calchas: black-box injection vulnerability detection for MCP servers"
 requires-python = ">=3.11"
 dependencies = [
     "mcp",
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mcpfuzz = "mcpfuzz.cli.main:main"
+calchas = "calchas.cli.main:main"
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -20,4 +20,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["mcpfuzz*"]
+include = ["calchas*"]

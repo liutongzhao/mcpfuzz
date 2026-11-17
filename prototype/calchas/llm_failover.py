@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 
-from mcpfuzz.llm_config import PROVIDERS
+from calchas.llm_config import PROVIDERS
 
 
 class AllModelsUnavailable(RuntimeError):
@@ -67,7 +67,7 @@ def agent_provider() -> dict:
     返回 llm_config.AGENT_PROVIDER_NAME 指定的那个（minimax）；找不到则回退 PROVIDERS 末位（兜底层）。
     这条路径在单次 agent 运行内不做级联兜底，故绑定到最稳定的模型，避免主模型 429 把序列构建打成
     fallback(无大模型)。sink 推断/规划不受影响，仍走 current_provider()/chat() 的优先级+冷却切换。"""
-    from mcpfuzz.llm_config import AGENT_PROVIDER_NAME
+    from calchas.llm_config import AGENT_PROVIDER_NAME
     for p in PROVIDERS:
         if p.get("name") == AGENT_PROVIDER_NAME:
             return p

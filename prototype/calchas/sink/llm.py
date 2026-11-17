@@ -14,8 +14,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from mcpfuzz.llm_config import API_KEY, BASE_URL, MODEL  # noqa: F401  (保留兼容；实际调用走 llm_failover)
-from mcpfuzz.llm_failover import AllModelsUnavailable
+from calchas.llm_config import API_KEY, BASE_URL, MODEL  # noqa: F401  (保留兼容；实际调用走 llm_failover)
+from calchas.llm_failover import AllModelsUnavailable
 
 from .types import SINK_TYPES
 
@@ -54,7 +54,7 @@ Output nothing but the JSON."""
 def _call(messages, timeout=120) -> str:
     # 走多模型故障切换（见 llm_failover）：当前模型失败自动切备用；全部失败抛 AllModelsUnavailable，
     # 该异常**不**被下面的规则兜底吞掉，而是向上冒泡让批量层暂停检测（等恢复 --resume 续跑）。
-    from mcpfuzz import llm_failover
+    from calchas import llm_failover
     return llm_failover.chat(messages, max_tokens=2000, timeout=timeout)
 
 

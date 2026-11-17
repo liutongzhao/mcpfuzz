@@ -1,4 +1,4 @@
-"""mcpfuzz 命令行入口：子命令解析、配置合并、呈现与日志落盘的装配。
+"""Calchas 命令行入口：子命令解析、配置合并、呈现与日志落盘的装配。
 
 子命令：
   scan      完整检测（单目标 / 批量），有副作用（发载荷）
@@ -16,12 +16,13 @@ import sys
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from mcpfuzz.config import Settings, build_settings
-from mcpfuzz.report import render_markdown
-from mcpfuzz.llm_failover import AllModelsUnavailable
-from mcpfuzz.run import (GatewayNotReady, make_run_dir, read_batch_file, scan_target, slugify,
+from calchas.__about__ import CLI_NAME
+from calchas.config import Settings, build_settings
+from calchas.report import render_markdown
+from calchas.llm_failover import AllModelsUnavailable
+from calchas.run import (GatewayNotReady, make_run_dir, read_batch_file, scan_target, slugify,
                          write_batch_summary)
-from mcpfuzz.targetcfg import resolve_target
+from calchas.targetcfg import resolve_target
 
 from .console import build_console
 from .events import JsonlSink, LogFileSink, Reporter
@@ -114,7 +115,7 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="mcpfuzz", description="MCP 服务器黑盒注入漏洞检测")
+    p = argparse.ArgumentParser(prog=CLI_NAME, description="MCP 服务器黑盒注入漏洞检测")
     sub = p.add_subparsers(dest="command", required=True)
 
     p_scan = sub.add_parser("scan", help="完整检测（连接→推 sink→攻击编排→判定→报告）")
@@ -315,7 +316,7 @@ def cmd_scan(args) -> int:
     if resume and skipped:
         print(f"断点续跑：账本已完成 {skipped} 个，跳过；本次剩余 {len(pending)} 个。")
 
-    from mcpfuzz.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED)
+    from calchas.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED)
     console = build_console(settings.format, settings.verbose or 0, bool(settings.quiet))
 
     def scan_one(target_arg, name, attempt):
@@ -388,8 +389,8 @@ def cmd_recon(args) -> int:
 
 
 def cmd_report(args) -> int:
-    from mcpfuzz.catalog import Target, Tool, Param
-    from mcpfuzz.orchestrator.types import Finding
+    from calchas.catalog import Target, Tool, Param
+    from calchas.orchestrator.types import Finding
 
     cat_raw = json.loads(Path(args.catalog_path).read_text())
     tools = [Tool(t["name"], t.get("description"), t.get("raw_input_schema", {}),

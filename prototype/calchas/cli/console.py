@@ -11,6 +11,7 @@ import time
 from collections import deque
 from datetime import datetime
 
+from calchas.__about__ import APP_NAME
 from .events import Event
 
 _LOG_HEIGHT = 16
@@ -202,7 +203,7 @@ class PlainConsole(_BaseTextConsole):
 
     def start(self, label: str) -> None:
         self._reset(label)
-        print(f"=== MCPFuzz ▸ {label} ===", flush=True)
+        print(f"=== {APP_NAME} ▸ {label} ===", flush=True)
 
     def handle(self, ev: Event) -> None:
         if ev.level == "debug" and self.verbose < 2:
@@ -312,7 +313,7 @@ class RichConsole(_BaseTextConsole):
             body.append(line + "\n", style=style)
 
         return Group(
-            Panel(header, title="MCPFuzz", border_style="cyan"),
+            Panel(header, title=APP_NAME, border_style="cyan"),
             Panel(body, title="实时日志", border_style="grey50", height=_LOG_HEIGHT + 2),
         )
 

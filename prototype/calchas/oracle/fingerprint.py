@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-from mcpfuzz.sink.types import AI, CI, CODE, PT, SSRF
+from calchas.sink.types import AI, CI, CODE, PT, SSRF
 
 _PATTERNS = {
     CI: [

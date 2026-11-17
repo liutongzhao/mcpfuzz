@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 
-from mcpfuzz.sink.types import W_MED
+from calchas.sink.types import W_MED
 
 from .batteries import get_battery
 from .types import ProbeSpec

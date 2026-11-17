@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import secrets
 
-from mcpfuzz.sink.types import AI, CI, CODE, PT, SSRF
+from calchas.sink.types import AI, CI, CODE, PT, SSRF
 
 # ---------------- 命令注入 ----------------
 # shell 语境变体：{c} 为要注入的命令。

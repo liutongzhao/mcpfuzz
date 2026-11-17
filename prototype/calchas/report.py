@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import time
 
-from mcpfuzz.orchestrator import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED
+from calchas.__about__ import APP_NAME
+from calchas.orchestrator import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED
 
 
 def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
@@ -19,7 +20,7 @@ def render_markdown(catalog, findings: list, meta: dict | None = None) -> str:
     tested = len(confirmed) + len(suspected) + len(clean) + len(unreached)
 
     lines = [
-        f"# MCPFuzz 检测报告 — {catalog.server_name or '?'} {catalog.server_version or ''}".rstrip(),
+        f"# {APP_NAME} 检测报告 — {catalog.server_name or '?'} {catalog.server_version or ''}".rstrip(),
         "",
         f"- 目标：`{catalog.url}`",
         f"- 协议版本：{catalog.protocol_version}",
@@ -121,7 +122,7 @@ def _render_confirmed(i: int, f) -> list[str]:
 def render_dry_run_markdown(catalog, plans: list[dict]) -> str:
     """recon/dry-run 的报告：只列攻击面与计划，不含任何判定结果。"""
     lines = [
-        f"# MCPFuzz 攻击面预览 — {catalog.server_name or '?'} {catalog.server_version or ''}".rstrip(),
+        f"# {APP_NAME} 攻击面预览 — {catalog.server_name or '?'} {catalog.server_version or ''}".rstrip(),
         "",
         f"- 目标：`{catalog.url}`",
         f"- 工具数：{len(catalog.tools)}",

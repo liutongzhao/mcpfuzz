@@ -10,6 +10,8 @@ P4 只多一步"在合法骨架里嵌载荷"。全部由参数自己在 JSON Sch
 """
 from __future__ import annotations
 
+from calchas.__about__ import MARKER
+
 import re
 import secrets
 
@@ -38,7 +40,7 @@ def _path_filler(param) -> str:
     desc = (getattr(param, "description", "") or "").lower()
     is_dir = any(k in name for k in _DIR_KEYS) or "directory" in desc or "folder" in desc
     tok = secrets.token_hex(4)
-    return f"/tmp/mcpfuzz_d{tok}" if is_dir else f"/tmp/mcpfuzz_f{tok}.bin"
+    return f"/tmp/{MARKER}_d{tok}" if is_dir else f"/tmp/{MARKER}_f{tok}.bin"
 
 # format 关键字 → 一个合法良性值（JSON Schema 标准词汇表，对所有服务一视同仁）
 _FORMAT_VALUES = {
@@ -210,5 +212,5 @@ def inject_value(param, payload: str):
             arr.append(_benign_item(param))
         return arr
     if t == "object":
-        return {"mcpfuzz": payload}            # key 位注入由上层(executor._shaped_args)按 placement 另发
+        return {MARKER: payload}            # key 位注入由上层(executor._shaped_args)按 placement 另发
     return payload
