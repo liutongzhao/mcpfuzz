@@ -3,6 +3,5 @@ out/
 runs/
 __pycache__/
 *.pyc
-calchas/llm_config.py
 calchas/payload/_raw/
 *.egg-info/

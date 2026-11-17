@@ -293,6 +293,9 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
         # P3: for an object parameter, test both the value position and key position for each payload (interleaved, so both positions survive truncation)
         from dataclasses import replace
         probes = [x for p in probes for x in (p, replace(p, placement="key"))]
+    if not getattr(oracle, "oob_enabled", True):
+        # no OOB collector configured -> drop out-of-band probes entirely (don't waste requests on an unreachable callback)
+        probes = [p for p in probes if p.channel != "oob"]
     repr_cls = _repr_class(prior)
     param = prior.param_path
     max_payloads = getattr(settings, "max_payloads", None) if settings else None

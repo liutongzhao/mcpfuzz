@@ -46,6 +46,14 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
                         help="send at most N payloads per parameter")
 
     g_llm = p.add_argument_group("LLM")
+    g_llm.add_argument("--llm-base-url", dest="llm_base_url", default=None, metavar="URL",
+                       help="LLM API base URL (OpenAI-compatible), e.g. https://api.openai.com/v1")
+    g_llm.add_argument("--llm-api-key", dest="llm_api_key", default=None, metavar="KEY",
+                       help="LLM API key (or set $CALCHAS_LLM_API_KEY to avoid putting it in shell history)")
+    g_llm.add_argument("--llm-model", dest="llm_model", default=None, metavar="NAME",
+                       help="LLM model name, e.g. gpt-4o")
+    g_llm.add_argument("--llm-config", dest="llm_config_file", default=None, metavar="FILE",
+                       help="JSON file with one or more LLM providers (overrides --llm-base-url/--llm-model/--llm-api-key)")
     g_llm.add_argument("--no-llm-sink", dest="llm_sink", action="store_false", default=None,
                        help="sink inference uses rules only (LLM off)")
     g_llm.add_argument("--no-agent", dest="sequence_agent", action="store_false", default=None,
@@ -197,6 +205,38 @@ def _resolve_targets(args) -> list[tuple[str, str | None]]:
 # subcommand implementations
 # ---------------------------------------------------------------------------
 
+def _configure_llm(settings: Settings) -> None:
+    """Set the active LLM providers from the CLI, before any scan. Priority: --llm-config file >
+    --llm-base-url/--llm-model (+ key from --llm-api-key or $CALCHAS_LLM_API_KEY). If nothing is given, the
+    providers stay unset and llm_config falls back to an external JSON file (if any), else none."""
+    from calchas import llm_config
+    cfg_file = getattr(settings, "llm_config_file", None)
+    if cfg_file:
+        loaded = llm_config.load_file(cfg_file)
+        if loaded is None:
+            sys.exit(f"--llm-config: could not load any provider from {cfg_file}")
+        llm_config.configure(loaded[0], loaded[1])
+        return
+    base = getattr(settings, "llm_base_url", None)
+    model = getattr(settings, "llm_model", None)
+    key = getattr(settings, "llm_api_key", None) or os.environ.get("CALCHAS_LLM_API_KEY", "")
+    if base and model:
+        llm_config.configure([llm_config.make_provider(base, key, model)])
+    elif base or model:
+        sys.exit("--llm-base-url and --llm-model must be given together.")
+    # else: leave unconfigured; get_providers() will try an external JSON file, else be empty
+
+
+def _require_llm_or_exit(settings: Settings) -> None:
+    """If any LLM-backed feature is on but no provider resolved, exit with a clear, actionable message."""
+    needs_llm = settings.llm_sink or settings.llm_plan or settings.sequence_agent
+    from calchas import llm_config
+    if needs_llm and not llm_config.get_providers():
+        sys.exit("No LLM provider configured. Pass --llm-base-url, --llm-api-key (or $CALCHAS_LLM_API_KEY) and "
+                 "--llm-model,\nor a --llm-config JSON file; or run LLM-free with "
+                 "--no-llm-sink --no-agent --no-llm-plan.")
+
+
 def _confirm_or_exit(settings: Settings, n_targets: int) -> None:
     if settings.dry_run or settings.assume_yes:
         return
@@ -305,6 +345,8 @@ def cmd_scan(args) -> int:
     if batch_name:
         # batch name: all results (per-target subdir + batch_summary + latest + resume ledger) go under runs/<batch name>/
         settings.out_dir = str(Path(settings.out_dir) / slugify(batch_name))
+    _configure_llm(settings)
+    _require_llm_or_exit(settings)
     targets = _resolve_targets(args)
     extra_headers = _parse_headers(args.header)
 

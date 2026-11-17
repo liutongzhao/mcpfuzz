@@ -7,8 +7,6 @@ from __future__ import annotations
 import json
 import subprocess
 
-from calchas.llm_config import API_KEY, BASE_URL, MODEL
-
 
 def complete(system: str, user: str, max_tokens: int = 2000, timeout: int = 120) -> str:
     """One system+user completion. Goes through multi-model failover (see llm_failover): on failure the current

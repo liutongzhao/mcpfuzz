@@ -1,8 +1,8 @@
 # runner 镜像：calchas 扫描器(源码烤进镜像) + 灌清单胶水(provision.py)。
 # 【自包含】——服务器上不需要任何源码，load 镜像即可跑。
 # 构建上下文 = 仓库根（见 docker-compose.build.yml 的 context: ../..），所以下面 COPY 路径相对仓库根。
-# 注意：COPY prototype 会把本地 prototype/calchas/llm_config.py(含密钥) 一起烤进镜像——
-#       所以镜像/镜像包是私密的，只在可信服务器上 load，别推公开仓库。
+# 大模型 key 不再烤进镜像：llm_config.py 已无密钥，运行时经 PIXEL_API_KEY 环境变量按批注入
+#       （见 docker-compose.yml / llm/ 配置目录）。
 #
 # 依赖策略：只钉死 5 个直接依赖到「本地能跑的 venv」里那套能协同的版本；传递依赖(pydantic_core 等)
 # 让 pip 按 linux/当前 Python 自己挑有 wheel 的版本——既避开松约束解析冲突，又避开太新 Python 没 linux 轮子。

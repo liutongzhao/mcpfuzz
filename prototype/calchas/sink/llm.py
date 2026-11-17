@@ -16,7 +16,6 @@ import re
 import subprocess
 from pathlib import Path
 
-from calchas.llm_config import API_KEY, BASE_URL, MODEL  # noqa: F401  (kept for compatibility; actual calls go through llm_failover)
 from calchas.llm_failover import AllModelsUnavailable
 
 from .types import SINK_TYPES

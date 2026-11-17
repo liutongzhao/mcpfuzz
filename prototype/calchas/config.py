@@ -10,8 +10,9 @@ import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-DEFAULT_OOB_CALLBACK = os.environ.get("MCP_OOB_CALLBACK", "http://43.133.80.249:9100")
-DEFAULT_OOB_QUERY = os.environ.get("MCP_OOB_QUERY", "http://43.133.80.249:9100/__hits")
+# OOB callback is off unless configured (--oob-callback / --oob-query, or the MCP_OOB_* env vars); no server baked in.
+DEFAULT_OOB_CALLBACK = os.environ.get("MCP_OOB_CALLBACK", "")
+DEFAULT_OOB_QUERY = os.environ.get("MCP_OOB_QUERY", "")
 
 
 @dataclass
@@ -28,7 +29,12 @@ class Settings:
                                    # construction to attack verdict exceeds it, abandon the tool, record its
                                    # parameters as "not tested", and move to the next, to avoid stalling the whole
                                    # batch. Default 15 minutes; <=0 disables the watchdog. Only effective on a Unix main thread (which is the case inside the container).
-    # LLM
+    # LLM provider (user-configured at run time; no keys baked into the package)
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model: str | None = None
+    llm_config_file: str | None = None
+    # LLM feature toggles
     llm_sink: bool = True
     llm_plan: bool = True
     sequence_agent: bool = True    # the sequence-construction agent (runs the loop live to produce a recipe); if off, falls back to one-shot planning
