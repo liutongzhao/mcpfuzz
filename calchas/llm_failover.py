@@ -98,7 +98,9 @@ class _ProviderError(RuntimeError):
 
 def _curl_one(prov: dict, messages: list, max_tokens: int, timeout: int) -> str:
     """Send one chat completion to a single provider. Return the body on success, raise _ProviderError on failure."""
-    payload = json.dumps({"model": prov["model"], "messages": messages, "max_tokens": max_tokens})
+    # Provider extras (from the config file's extra_body) go first, so the core fields always win.
+    payload = json.dumps({**(prov.get("extra_body") or {}),
+                          "model": prov["model"], "messages": messages, "max_tokens": max_tokens})
     try:
         p = subprocess.run(
             ["curl", "-sS", "-m", str(timeout), prov["base_url"],

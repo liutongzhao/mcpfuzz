@@ -282,7 +282,8 @@ def _make_model(settings):
     timeout = getattr(settings, "timeout", None) or 60.0
     # No temperature set: this relay is sensitive to temperature; probing confirmed the default works and supports tool calling
     _MODEL = ChatOpenAI(base_url=base, api_key=prov["api_key"], model=prov["model"],
-                        timeout=max(timeout, 60.0), max_retries=1)
+                        timeout=max(timeout, 60.0), max_retries=1,
+                        extra_body=prov.get("extra_body") or None)
     _MODEL_PROVIDER = prov["name"]
     return _MODEL
 

@@ -106,10 +106,16 @@ def load_file(path: str) -> tuple[list, str] | None:
         model = str(p.get("model", "")).strip()
         if not base or not model:
             continue
-        providers.append({"name": str(p.get("name") or model).strip(),
-                          "base_url": base,
-                          "api_key": _resolve_api_key(p.get("api_key")),
-                          "model": model})
+        prov = {"name": str(p.get("name") or model).strip(),
+                "base_url": base,
+                "api_key": _resolve_api_key(p.get("api_key")),
+                "model": model}
+        # Optional provider-specific request fields merged into every chat-completion body,
+        # e.g. {"enable_thinking": false} to turn off a model's default reasoning mode.
+        extra = p.get("extra_body")
+        if isinstance(extra, dict) and extra:
+            prov["extra_body"] = extra
+        providers.append(prov)
     if not providers:
         return None
     agent = str(data.get("agent_provider") or "").strip()

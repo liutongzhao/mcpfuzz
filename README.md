@@ -98,7 +98,9 @@ calchas scan <url> --no-llm-sink --no-agent --no-llm-plan
 }
 ```
 
-`"api_key": "env:VAR"` reads the key from environment variable `VAR`.
+`"api_key": "env:VAR"` reads the key from environment variable `VAR`. An optional `"extra_body"` object is
+merged into every request to that provider, for provider-specific switches — for example
+`"extra_body": {"enable_thinking": false}` turns off the default reasoning mode of Qwen3-series models.
 
 ## Out-of-band (OOB) channel
 
