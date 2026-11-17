@@ -1,10 +1,12 @@
-"""大模型层：按工具**单次**推断每个参数的注入类别抬升。复用中转，带本地缓存。
+"""LLM layer: infer each parameter's injection-class raise with a SINGLE call per tool. Reuses the
+relay client, with a local cache.
 
-设计要点（见 docs/Sink推断模块设计.md）：
-- 按工具一次性判（该工具所有参数 + 全部类别一起），不多次采样（太费时且非必要——
-  地板 + 规则并集已提供召回安全网）。
-- 逐类独立打分、先推理后结论、**强制引用描述/schema 原文**作依据（引不出原话 → 不抬）。
-- 置信分 low / medium / high 三档，映射到权重档位。
+Design notes (see the sink-inference design doc):
+- Judge per tool in one shot (all of the tool's parameters + all classes together), without multiple
+  sampling (too slow and unnecessary — the floor + rule union already provides a recall safety net).
+- Score each class independently, reason first then conclude, and REQUIRE a quote from the
+  description/schema as justification (if no original phrase can be cited -> do not raise).
+- Confidence low / medium / high, mapped to weight tiers.
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from calchas.llm_config import API_KEY, BASE_URL, MODEL  # noqa: F401  (保留兼容；实际调用走 llm_failover)
+from calchas.llm_config import API_KEY, BASE_URL, MODEL  # noqa: F401  (kept for compatibility; actual calls go through llm_failover)
 from calchas.llm_failover import AllModelsUnavailable
 
 from .types import SINK_TYPES
@@ -52,8 +54,9 @@ Output nothing but the JSON."""
 
 
 def _call(messages, timeout=120) -> str:
-    # 走多模型故障切换（见 llm_failover）：当前模型失败自动切备用；全部失败抛 AllModelsUnavailable，
-    # 该异常**不**被下面的规则兜底吞掉，而是向上冒泡让批量层暂停检测（等恢复 --resume 续跑）。
+    # Goes through multi-model failover (see llm_failover): on failure the current model is swapped for a
+    # backup; if all fail it raises AllModelsUnavailable. That exception is NOT swallowed by the rule
+    # fallback below — it bubbles up so the batch layer pauses detection (resume with --resume after recovery).
     from calchas import llm_failover
     return llm_failover.chat(messages, max_tokens=2000, timeout=timeout)
 
@@ -62,7 +65,7 @@ def _parse(text) -> dict:
     text = re.sub(r"```(?:json)?", "", text).strip()
     s, e = text.find("{"), text.rfind("}")
     if s == -1 or e <= s:
-        raise ValueError("回复无 JSON 对象")
+        raise ValueError("response contains no JSON object")
     return json.loads(text[s:e + 1])
 
 
@@ -86,7 +89,7 @@ def _norm_conf(v) -> str:
 
 
 def classify_tool(tool, cache_dir: Path | None = None, max_attempts: int = 3) -> dict:
-    """返回 {param_path: [ {type, confidence(low/medium/high), evidence} ]}，仅含合法 sink 类型。"""
+    """Return {param_path: [ {type, confidence(low/medium/high), evidence} ]}, only valid sink types."""
     cache_file = None
     if cache_dir:
         cache_dir = Path(cache_dir)
@@ -114,17 +117,18 @@ def classify_tool(tool, cache_dir: Path | None = None, max_attempts: int = 3) ->
                                  "confidence": _norm_conf(lab.get("confidence")),
                                  "evidence": str(lab.get("evidence", lab.get("reason", "")))[:200]}
                         if t == "code_injection":
-                            # 声明域+引文（口径 B：仅附注供人工判定，不进工具自动裁决）
+                            # Declared domain + quote (policy B: annotation for manual review only,
+                            # not part of the tool's automatic verdict).
                             entry["declared_domain"] = str(lab.get("declared_domain", ""))[:300]
                             entry["domain_evidence"] = str(lab.get("domain_evidence", ""))[:200]
                         clean.append(entry)
                 result[path] = clean
             break
         except AllModelsUnavailable:
-            raise   # 所有模型都挂了：不降级成规则兜底，向上冒泡让批量层暂停检测
+            raise   # all models down: do not degrade to the rule fallback; bubble up so the batch layer pauses
         except Exception:
             if attempt == max_attempts:
-                result = {}   # 单模型偶发失败（已在 failover 内切过备用仍不行）→ 留空，规则层兜底
+                result = {}   # occasional single-model failure (already tried backups via failover) -> leave empty, rule layer covers
     if cache_file is not None:
         cache_file.write_text(json.dumps(result, ensure_ascii=False))
     return result

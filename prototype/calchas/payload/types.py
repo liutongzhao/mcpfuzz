@@ -1,6 +1,8 @@
-"""载荷层数据结构：探针（ProbeSpec）—— 载荷合成与判定之间的接口对象。
+"""Payload-layer data structure: the probe (ProbeSpec) — the interface object between payload synthesis
+and verdict.
 
-见 docs/载荷合成模块设计.md。一条探针 = 活性载荷 + 良性对照 + 漏洞类 + 观测通道 + 命中判据 + 观测物。
+See the payload-synthesis design doc. One probe = active payload + benign control + vuln class + observation channel
++ hit criterion + observable.
 """
 from __future__ import annotations
 
@@ -12,19 +14,19 @@ class ProbeSpec:
     tool: str
     param_path: str
     vuln_class: str          # command_injection / argument_injection / path_traversal / ssrf ...
-    value: str               # 活性载荷：最终塞进参数的字符串（可能已内嵌 oracle 诱饵）
-    channel: str             # 观测通道：oob / inband / timing / differential
-    control: str | None = None   # 良性对照值（timing/differential 必需；直接取证型可空，用基线兜底）
-    probe: object = None     # oracle 铸造的观测物（oob/inband 需要；timing/differential 为 None）
-    expect: list = field(default_factory=list)   # inband 要在响应里匹配的签名（默认 [token]）
-    delay_target: float = 0.0   # timing：期望额外延时（秒）
-    technique: str = ""      # 便于报告，如 'ci:;echo' / 'pt:../etc/passwd'
-    rank: int = 0            # 越小越先发，支持早停
-    reflection_safe: bool = True   # inband 命中是否"反射免疫"：期望签名不可能由输入被原样回显产生。
-    #   False（如 AI 未知选项，token 就在输入里）→ 命中须有对应错误指纹佐证才算确认，否则仅弱证据。
-    placement: str = "value"   # object 型参数的载荷放置位：value（放映射的值）/ key（放映射的键）
-    target_scope: str = "public"   # SSRF 载荷打的目标类别：public（公网/我们的回连collector）/
-    #   internal（内网/环回/云元数据）。信任边界判定据此：只有 internal 目标被够到才算 SSRF 证据；
-    #   公网出网是 URL 抓取类工具的本职功能，不单独构成漏洞。
-    tier: str = ""   # 代码注入危害分层（不作确认闸门，口径 ①）："L1"=算术求值（impact=arithmetic_eval）/
-    #   "L2"=越域求值（模板 delimiter / 函数调用回显，impact=rce）。任一命中即确认；其它类别留空。
+    value: str               # active payload: the final string placed into the parameter (may already embed an oracle decoy)
+    channel: str             # observation channel: oob / inband / timing / differential
+    control: str | None = None   # benign control value (required for timing/differential; may be empty for direct-evidence types, falling back to the baseline)
+    probe: object = None     # observable minted by the oracle (needed for oob/inband; None for timing/differential)
+    expect: list = field(default_factory=list)   # signature(s) to match in the response for inband (default [token])
+    delay_target: float = 0.0   # timing: expected extra delay (seconds)
+    technique: str = ""      # for reporting, e.g. 'ci:;echo' / 'pt:../etc/passwd'
+    rank: int = 0            # lower = sent earlier, supports early-stop
+    reflection_safe: bool = True   # whether an inband hit is "reflection-immune": the expected signature cannot be produced by the input being echoed verbatim.
+    #   False (e.g. AI unknown-option, where the token is in the input itself) -> a hit requires a corresponding error fingerprint to corroborate before it counts as confirmed, otherwise it is only weak evidence.
+    placement: str = "value"   # payload placement for object-typed parameters: value (in the map's value) / key (in the map's key)
+    target_scope: str = "public"   # which target class the SSRF payload hits: public (internet / our own callback collector) /
+    #   internal (intranet / loopback / cloud metadata). The trust-boundary judgement uses this: only reaching an internal target counts as SSRF evidence;
+    #   egress to the public internet is the intended function of URL-fetching tools and does not by itself constitute a vulnerability.
+    tier: str = ""   # code-injection impact tier (not a confirmation gate, policy ①): "L1"=arithmetic eval (impact=arithmetic_eval) /
+    #   "L2"=out-of-domain eval (template delimiter / function-call echo, impact=rce). Any hit confirms; left empty for other classes.

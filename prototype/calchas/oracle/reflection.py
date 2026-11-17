@@ -1,8 +1,8 @@
-"""响应回显通道：在工具返回文本里匹配约定的标记。
+"""Response-reflection channel: match an agreed marker in the tool's returned text.
 
-- embed(token)：给出载荷里要回显出来的 marker（默认就是 token）。
-- observe(probe, 返回文本)：命中则返回 Hit（含匹配到的片段）。
-对路径穿越读也适用——此时 probe.expect 放越界文件的特征串。
+- embed(token): produce the marker the payload should reflect back (defaults to the token itself).
+- observe(probe, response_text): return a Hit (with the matched snippet) on a hit.
+Also used for path-traversal reads — there probe.expect holds the signature string of the out-of-bounds file.
 """
 from __future__ import annotations
 

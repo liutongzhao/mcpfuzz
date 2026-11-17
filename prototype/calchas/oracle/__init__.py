@@ -1,4 +1,4 @@
-"""判定器（Oracle）：造诱饵 + 盯信号 + 下结论。第一期含 OOB 回连与响应回显两个通道。"""
+"""Oracle: craft decoys, watch for signals, decide. Phase 1 includes two channels: OOB callback and response reflection."""
 from .core import Oracle
 from .probe import Hit, Probe, ProbeRegistry, mint_token
 from .verdict import CONFIRMED, NOT_TRIGGERED, Finding

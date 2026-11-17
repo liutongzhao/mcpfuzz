@@ -1,7 +1,9 @@
-"""判定器门面：串起探针登记、各通道观测与错误指纹，供判定引擎（executor）调用。
+"""Oracle facade: wires together probe registration, per-channel observation and error fingerprints, for
+the verdict engine (executor) to call.
 
-本层只做"低层观测物"：铸造带 token 的诱饵、匹配带内签名、查带外回连、识别错误指纹。
-差分/时延比较、触达判定、证据聚合、五态裁决在判定引擎（orchestrator.executor）里完成。
+This layer only produces "low-level observables": minting token-bearing decoys, matching in-band signatures,
+querying OOB callbacks, recognizing error fingerprints. Differential/timing comparison, reachability
+judgement, evidence aggregation and the five-state verdict are done in the verdict engine (orchestrator.executor).
 """
 from __future__ import annotations
 
@@ -26,32 +28,32 @@ class Oracle:
 
     def new_probe(self, channel: str, meta: dict | None = None,
                   expect: list | None = None) -> Probe:
-        """铸造探针。channel: oob（带外回连）| inband（带内回显/签名匹配）。"""
+        """Mint a probe. channel: oob (out-of-band callback) | inband (in-band reflection / signature match)."""
         token = mint_token()
         if channel == "oob":
             embed = self.oob.embed(token)
         elif channel in ("inband", "reflection"):
             embed = self.reflection.embed(token)
         else:
-            raise ValueError(f"未知判定通道: {channel}")
+            raise ValueError(f"unknown verdict channel: {channel}")
         probe = Probe(token=token, channel=channel, embed=embed,
                       meta=meta or {}, expect=expect or [token])
         self.registry.add(probe)
         return probe
 
     def observe_inband(self, probe: Probe, response_text: str) -> Hit | None:
-        """带内通道：在响应/报错文本里匹配 probe.expect（token 或特征签名）。"""
+        """In-band channel: match probe.expect (token or signature) in the response/error text."""
         return self.reflection.observe(probe, response_text)
 
-    # 兼容旧名
+    # legacy alias
     observe_response = observe_inband
 
     def poll(self, probes: list[Probe], rounds: int = 3, interval: float = 2.0) -> dict[str, Hit]:
-        """带外通道：批量查命中。只对 channel=='oob' 的探针生效。"""
+        """Out-of-band channel: query hits in batch. Applies only to probes with channel=='oob'."""
         return self.oob.poll(probes, rounds, interval)
 
     def fingerprint(self, text: str, vuln_class: str) -> str | None:
-        """错误指纹（弱证据）。"""
+        """Error fingerprint (weak evidence)."""
         return error_fingerprint(text, vuln_class)
 
     def verdict(self, probe: Probe, hit: Hit | None) -> Finding:

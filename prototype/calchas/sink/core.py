@@ -1,6 +1,8 @@
-"""Sink 推断门面：结构预筛 + 地板抬升（规则并集 + 大模型），输出每参数的类别软先验。
+"""Sink-inference facade: structural pre-filter + floor-and-raise (rule union + LLM), emitting a
+per-parameter soft prior over classes.
 
-见 docs/Sink推断模块设计.md。产出 ParamSinkPrior（class_weights 带地板），下游只排序不闸门。
+See the sink-inference design doc. Produces ParamSinkPrior (class_weights with a floor); downstream only
+sorts, it does not gate.
 """
 from __future__ import annotations
 
@@ -13,31 +15,34 @@ from .types import (CONF_WEIGHT, FLOOR, PHASE1_CLASSES, ParamSinkPrior, Raise)
 
 
 def is_inert(param) -> tuple[bool, str]:
-    """结构预筛：仅对**值域封闭、结构上不可能承载注入**的参数做事实性过滤（召回优先，宁放勿误杀）。
+    """Structural pre-filter: only factually filter out parameters whose value domain is closed and that
+    structurally cannot carry an injection (recall-first, prefer to keep rather than wrongly drop).
 
-    惰性（跳过）：布尔、枚举、元素非字符串的数组。
-    其余（字符串/联合/未知/数值标量/含字符串数组/对象）一律进入语义先验——
-    数值标量虽多半会被校验挡下，但仍以地板最小预算测试，避免漏掉"宽松校验"的服务端。
+    Inert (skipped): boolean, enum, arrays whose elements are non-string.
+    Everything else (string / union / unknown / numeric scalar / array containing strings / object) goes
+    into the semantic prior — a numeric scalar is mostly rejected by validation, but is still tested with
+    the minimal floor budget, so a server with loose validation is not missed.
     """
     if param.enum:
-        return True, "枚举，值域封闭"
+        return True, "enum, closed value domain"
     t = param.type
     if t == "boolean":
-        return True, "布尔，值域封闭"
+        return True, "boolean, closed value domain"
     if t == "array":
         it = param.item_type or "unknown"
         if it not in ("string", "union", "unknown"):
-            return True, f"数组元素类型 {it}，非字符串"
+            return True, f"array element type {it}, non-string"
     return False, ""
 
 
 def _combine(enabled, rule_rs: list[Raise], llm_rs: list[Raise]):
-    """地板 + 抬升：每个启用类别从地板起，被规则/大模型抬升取 max。返回 (weights, provenance)。"""
+    """Floor + raise: each enabled class starts at the floor and is lifted by rules/the LLM via max.
+    Returns (weights, provenance)."""
     weights = {c: FLOOR for c in enabled}
     provenance: dict[str, list] = {}
     for r in rule_rs + llm_rs:
         if r.cls not in weights:
-            continue   # 非本阶段启用类别（阶段范围闸门，允许）
+            continue   # a class not enabled in this phase (phase-scope gate, allowed)
         if r.weight > weights[r.cls]:
             weights[r.cls] = r.weight
         if r.weight > FLOOR:
@@ -64,7 +69,8 @@ class SinkInferencer:
                 except Exception:
                     return tool.name, {}
             total = len(target.tools)
-            # as_completed 边完成边上报：LLM 分类是本阶段最慢的部分，逐工具推进进度条，避免界面像卡死。
+            # as_completed reports as it finishes: LLM classification is the slowest part of this phase;
+            # advance the progress bar per tool so the UI does not look frozen.
             with ThreadPoolExecutor(min(self.workers, total)) as ex:
                 futures = [ex.submit(one, t) for t in target.tools]
                 done = 0
@@ -89,8 +95,9 @@ class SinkInferencer:
                           for x in tl.get(p.path, []) if x.get("type") in self.enabled]
                 weights, prov = _combine(self.enabled, rule_rs, llm_rs)
                 ps = ParamSinkPrior(tool.name, p.path, p.type, weights, False, "", prov, param=p)
-                # 代码注入声明域（若 LLM 对该参数标了 code_injection 并给出 declared_domain）：
-                # 口径 B，仅作附注供人工判定 dangerous-by-design，不参与自动裁决。
+                # Code-injection declared domain (if the LLM labelled this parameter code_injection and
+                # gave a declared_domain): policy B, annotation for manual dangerous-by-design judgement
+                # only, not part of the automatic verdict.
                 for x in tl.get(p.path, []):
                     if x.get("type") == "code_injection":
                         ps.declared_domain = x.get("declared_domain", "") or ps.declared_domain

@@ -1,4 +1,4 @@
-"""探针与命中证据的基础数据结构，以及 token 铸造与登记表。"""
+"""Base data structures for probes and hit evidence, plus token minting and the registry."""
 from __future__ import annotations
 
 import secrets
@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 
 def mint_token() -> str:
-    """生成唯一、不可能自然出现、URL/shell 安全、可在文本中匹配的 token。"""
+    """Generate a token that is unique, cannot occur naturally, is URL/shell-safe, and matchable in text."""
     return TOKEN_PREFIX + secrets.token_hex(5)
 
 
@@ -17,9 +17,9 @@ def mint_token() -> str:
 class Probe:
     token: str
     channel: str                       # "oob" | "reflection"
-    embed: str                         # 交给载荷层嵌入的可观测物（回连URL / 回显marker）
-    meta: dict = field(default_factory=dict)   # tool/param/payload 等溯源信息
-    expect: list = field(default_factory=list) # 回显通道要在返回里匹配的字符串（默认 [token]）
+    embed: str                         # observable handed to the payload layer (callback URL / reflected marker)
+    meta: dict = field(default_factory=dict)   # provenance: tool/param/payload etc.
+    expect: list = field(default_factory=list) # strings the reflection channel matches in the response (default [token])
     created_at: float = field(default_factory=time.time)
 
 
@@ -32,7 +32,7 @@ class Hit:
 
 
 class ProbeRegistry:
-    """token → Probe 的登记表，用于溯源与留证。"""
+    """Registry of token -> Probe, for provenance and evidence retention."""
 
     def __init__(self):
         self._probes: dict[str, Probe] = {}

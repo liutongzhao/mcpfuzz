@@ -1,8 +1,8 @@
-"""带外回连(OOB)通道：采集服务的客户端。
+"""Out-of-band (OOB) callback channel: client for the collection service.
 
-- embed(token)：给出载荷里要回连的 URL。
-- poll(probes)：查采集服务，哪些 token 回连了，返回命中证据。
-采集服务见 deploy/infra/oob（任意请求 /<token> 记为命中，GET /__hits 查询）。
+- embed(token): produce the URL the payload should call back to.
+- poll(probes): query the collection service for which tokens called back, returning hit evidence.
+See deploy/infra/oob for the collection service (any request to /<token> counts as a hit; query via GET /__hits).
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class OOBChannel:
             return json.loads(r.read().decode("utf-8", "replace"))
 
     def poll(self, probes: list[Probe], rounds: int = 3, interval: float = 2.0) -> dict[str, Hit]:
-        """批量查命中，带观测窗口以捕获晚到的回连。返回 {token: Hit}。"""
+        """Query hits in batch, with an observation window to catch late callbacks. Returns {token: Hit}."""
         targets = [p for p in probes if p.channel == "oob"]
         if not targets:
             return {}
