@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .DS_Store
 scripts/llm_config.py
+# 第三方论文 PDF(25M)，不入开源库
+docs/参考论文/
