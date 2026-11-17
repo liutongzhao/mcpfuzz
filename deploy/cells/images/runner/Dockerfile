@@ -27,13 +27,13 @@ RUN pip install --no-cache-dir \
       "langchain-mcp-adapters==0.3.2" \
       "langchain-openai==1.7.3"
 
-# 烤进扫描器源码 + 胶水脚本（路径相对仓库根；.venv/runs/out 已由根 .dockerignore 排除）
-COPY prototype /app/prototype
+# 烤进扫描器源码 + 胶水脚本（路径相对仓库根；无关内容已由根 .dockerignore 排除）
+COPY calchas /app/calchas
 COPY deploy/cells/provision.py /app/provision.py
 COPY deploy/cells/images/runner/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-ENV PYTHONPATH=/app/prototype \
+ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

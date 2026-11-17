@@ -3,7 +3,7 @@
 目标子集（与论文范围一致）：
   组件为 MCP 服务器或网关，攻击面在服务端，且从 MCP 协议入口触发（tools/call、resources、prompts、HTTP 传输层）
 
-用法：python3 scripts/analyze.py
+用法：python3 dataset/analyze.py
 """
 import json
 from collections import Counter, defaultdict

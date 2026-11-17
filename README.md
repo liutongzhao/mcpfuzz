@@ -127,6 +127,23 @@ reflection, timing and read-back channels.
 
 Run `calchas scan --help` for the full list.
 
+## Repository layout
+
+| Path | Content |
+|---|---|
+| `calchas/` | the tool (the only code shipped in the PyPI package) |
+| `dev/` | developer debugging scripts |
+| `deploy/` | experiment infrastructure: batch-scan docker-compose cells, OOB collector, frozen batch records |
+| `dataset/` | vulnerability-dataset pipeline (CVE/GHSA/OSV collection and labeling) |
+| `docs/`, `research_notes/` | design notes and related-work surveys |
+
+## Development
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e .
+.venv/bin/calchas selftest
+```
+
 ## License
 
 Apache-2.0

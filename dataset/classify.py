@@ -9,10 +9,10 @@
   label_summary.txt  各标签分布统计
 
 用法：
-  python3 scripts/classify.py                  # 标注全部（已标注的会跳过）
-  python3 scripts/classify.py --limit 20       # 先试跑 20 条
-  python3 scripts/classify.py --review         # 用 REVIEW_MODEL 复核 confidence=low 的条目
-  python3 scripts/classify.py --export-only    # 不调用模型，只重新导出合并结果与统计
+  python3 dataset/classify.py                  # 标注全部（已标注的会跳过）
+  python3 dataset/classify.py --limit 20       # 先试跑 20 条
+  python3 dataset/classify.py --review         # 用 REVIEW_MODEL 复核 confidence=low 的条目
+  python3 dataset/classify.py --export-only    # 不调用模型，只重新导出合并结果与统计
 """
 import argparse
 import csv

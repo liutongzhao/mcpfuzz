@@ -16,5 +16,5 @@ services:
 
   runner:
     build:
-      context: ../..                 # 仓库根：含 prototype/（扫描器源码，烤进镜像）
+      context: ../..                 # 仓库根：含 calchas/（扫描器源码，烤进镜像）
       dockerfile: deploy/cells/images/runner/Dockerfile

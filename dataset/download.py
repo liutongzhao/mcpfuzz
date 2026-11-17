@@ -5,7 +5,7 @@
   - github/advisory-database：GitHub 安全公告（含 reviewed 与 unreviewed）
   - OSV.dev：npm 与 PyPI 生态的全量漏洞
 
-用法：python3 scripts/download.py [--force]
+用法：python3 dataset/download.py [--force]
 """
 import json
 import subprocess

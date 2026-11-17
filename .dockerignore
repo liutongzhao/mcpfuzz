@@ -1,15 +1,21 @@
 # 控制 docker build 上下文（deploy/cells 的 runner 镜像以仓库根为上下文）。
-# 排除大体积/无关内容，保留 prototype/ 源码本身。
+# 只需要 calchas/ 源码和 deploy/cells 的胶水脚本，其余一律排除。
 .git
 **/__pycache__
 **/*.pyc
 .DS_Store
+.venv/
+dist/
+build/
+*.egg-info/
+runs/
 data/
 docs/
+dataset/
+dev/
+research_notes/
+calchas/payload/_raw/
 deploy/batches/
 deploy/cells/results/
 deploy/cells/batches/*.jsonl
 deploy/cells/*.tar.gz
-prototype/.venv/
-prototype/runs/
-prototype/out/

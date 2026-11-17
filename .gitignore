@@ -1,7 +1,25 @@
-data/
+# ---- 通用 ----
 __pycache__/
 *.pyc
 .DS_Store
-scripts/llm_config.py
-# 第三方论文 PDF(25M)，不入开源库
+
+# ---- Python 构建/环境（工具本体在仓库根）----
+.venv/
+dist/
+build/
+*.egg-info/
+
+# ---- 本地运行产物（扫描结果，不入库）----
+runs/
+
+# ---- 载荷原始词表（第三方来源，仅参考，运行时不加载）----
+calchas/payload/_raw/
+
+# ---- 数据集产物（体积大，GB 级）----
+data/
+
+# ---- 数据集流水线的本地模型配置（含 key）----
+dataset/llm_config.py
+
+# ---- 第三方论文 PDF（25M，有版权，不入开源库）----
 docs/参考论文/
