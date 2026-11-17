@@ -1,9 +1,9 @@
-"""第三步入口：连接目标 → 取工具清单 → 推断每个参数的 sink，打印并保存。
+"""Step-three entry: connect to the target -> get the tool catalog -> infer each parameter's sink, print and save.
 
-用法：
-  python dump_sinks.py <URL | config.json> [名称]
-  python dump_sinks.py <...> --no-llm          # 只用规则层（对照）
-结果保存到 out/<server>_sinks.json。
+Usage:
+  python dump_sinks.py <URL | config.json> [name]
+  python dump_sinks.py <...> --no-llm          # rule layer only (comparison)
+Results are saved to out/<server>_sinks.json.
 """
 import json
 import re
@@ -21,13 +21,13 @@ def main():
     args = [a for a in sys.argv[1:] if a != "--no-llm"]
     use_llm = "--no-llm" not in sys.argv
     if not args:
-        sys.exit("用法: python dump_sinks.py <URL | config.json> [名称] [--no-llm]")
+        sys.exit("usage: python dump_sinks.py <URL | config.json> [name] [--no-llm]")
     url, headers = resolve_target(args[0], args[1] if len(args) > 1 else None)
 
-    print(f"连接 {url} …" + ("（带鉴权头）" if headers else ""))
+    print(f"connecting {url} ..." + (" (with auth header)" if headers else ""))
     target = fetch_catalog_sync(url, headers)
-    print(f"服务器：{target.server_name} {target.server_version}  工具数：{len(target.tools)}")
-    print(f"推断方式：{'规则 + 大模型' if use_llm else '仅规则'}\n")
+    print(f"server: {target.server_name} {target.server_version}  tools: {len(target.tools)}")
+    print(f"inference: {'rules + LLM' if use_llm else 'rules only'}\n")
 
     inferencer = SinkInferencer(use_llm=use_llm, cache_dir=OUT / ".sink_cache")
     results = inferencer.infer(target)
@@ -42,7 +42,7 @@ def main():
                 print(f"      · {s.reason}")
 
     total_params = len(results)
-    print(f"\n有 sink 候选的参数：{len(hot)} / {total_params}")
+    print(f"\nparameters with sink candidates: {len(hot)} / {total_params}")
 
     OUT.mkdir(exist_ok=True)
     safe = re.sub(r"[^\w.-]", "_", (target.server_name or "server"))
@@ -51,7 +51,7 @@ def main():
         [{"tool": r.tool, "param_path": r.param_path, "param_type": r.param_type,
           "sinks": [vars(s) for s in r.sinks]} for r in results],
         ensure_ascii=False, indent=2))
-    print(f"已保存：{path}")
+    print(f"saved: {path}")
 
 
 if __name__ == "__main__":

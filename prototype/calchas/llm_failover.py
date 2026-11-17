@@ -1,18 +1,22 @@
-"""多模型故障切换调度器：所有 LLM 调用的统一入口。
+"""Multi-model failover scheduler: the single entry point for all LLM calls.
 
-- PROVIDERS（见 llm_config）**按优先级排列**，PROVIDERS[0] 为主模型（批次 key 注入的那个）。
-- 策略＝**优先级 + 失败冷却**（不再黏性赖在备用上）：每次 chat() 都从主模型起按优先级尝试；
-  某 provider 失败就给它记一段冷却期（COOLDOWN_SEC），冷却中的 provider 在后续调用里被降到
-  本轮最后（仍兜底尝试、但不抢优先、也不白等它的超时）；任一 provider 成功即**清除它的冷却**。
-  → 主模型临时挂掉时自动用备用；冷却一过，下次调用又先试主模型，**一旦恢复立刻切回主模型**。
-- current_provider()/mark_current_down(): 暴露「当前该优先用谁」给需要的调用方（如诊断/日志）。
-- agent_provider(): 序列构建智能体（ChatOpenAI 路径）**固定**用的 provider（minimax），与上面的
-  三级切换解耦——该路径单次运行内不做级联兜底，绑死最稳定模型，避免主模型 429 把序列构建打成
-  fallback(无大模型)。sink 推断/规划仍走 chat() 的三级切换，不受影响。
-- 一轮（所有 provider，含冷却中的）全失败 → 抛 AllModelsUnavailable（批量层据此暂停，--resume 续跑）。
+- PROVIDERS (see llm_config) are **ordered by priority**, PROVIDERS[0] is the primary model (the one the batch key is injected for).
+- Strategy = **priority + failure cooldown** (no longer stickily staying on a backup): every chat() tries from
+  the primary by priority; a provider that fails is given a cooldown period (COOLDOWN_SEC), during which it is
+  demoted to last in subsequent calls (still tried as a fallback, but without priority and without waiting on its
+  timeout); any provider's success **clears its cooldown**.
+  -> when the primary is temporarily down, a backup is used automatically; once the cooldown passes, the next
+  call tries the primary first again, **switching back to the primary immediately once it recovers**.
+- current_provider()/mark_current_down(): expose "who should be preferred now" to callers that need it (e.g. diagnostics/logs).
+- agent_provider(): the provider (minimax) the sequence-construction agent (the ChatOpenAI path) uses **fixedly**,
+  decoupled from the three-tier switching above — that path does no cascading fallback within a single run and is
+  bound to the most stable model, to avoid a primary-model 429 beating sequence construction into fallback (no LLM).
+  Sink inference / planning still go through chat()'s three-tier switching, unaffected.
+- A whole round (all providers, incl. those in cooldown) failing -> raise AllModelsUnavailable (the batch layer pauses on it, resume with --resume).
 
-设计原则：对调用方只暴露"拿到一个可用模型的回复"或"全挂了（AllModelsUnavailable）"两种结果，
-把"换哪个模型 / 何时切回主模型"收敛在这里，与 sink 推断 / 规划兜底 / 序列智能体三处调用解耦。
+Design principle: expose to callers only two outcomes — "got a reply from an available model" or "all down
+(AllModelsUnavailable)" — converging "which model to switch to / when to switch back to the primary" here,
+decoupled from the three call sites (sink inference / planning fallback / sequence agent).
 """
 from __future__ import annotations
 
@@ -27,27 +31,28 @@ from calchas.llm_config import PROVIDERS
 
 
 class AllModelsUnavailable(RuntimeError):
-    """配置的所有大模型在一轮尝试里都失败——检测应暂停，等恢复后 --resume 续跑。"""
+    """All configured models failed within one round of attempts — detection should pause, resume with --resume after recovery."""
 
 
-# 主/备切换的冷却期（秒）：某 provider 失败后，这段时间内把它降到最低优先级，不抢先、不白等其超时；
-# 冷却一过便恢复「先试它」——主模型就是靠这个在恢复后被重新优先尝试、从而自动切回。
+# The primary/backup switching cooldown (seconds): after a provider fails, it is demoted to lowest priority for
+# this period, not tried first and not waited on for its timeout; once the cooldown passes it is "tried first"
+# again — this is how the primary gets re-prioritized after recovery and thus auto-switches back.
 COOLDOWN_SEC = float(os.environ.get("LLM_PRIMARY_COOLDOWN_SEC", "60"))
 
 _lock = threading.Lock()
-# 每个 provider 的「冷却截止时刻」(time.monotonic 基准)；<=now 即可用。0 表示从未失败/已恢复。
+# Each provider's "cooldown deadline" (time.monotonic basis); <=now means available. 0 means never failed / recovered.
 _down_until = [0.0] * len(PROVIDERS)
-_last_used_idx = 0   # 上次成功用的 provider 下标（仅用于打印"切回更高优先级"的恢复日志）
+_last_used_idx = 0   # the index of the last successfully-used provider (only for printing the "switched back to a higher priority" recovery log)
 
 
 def _notify(msg: str) -> None:
-    # 直接写 stderr：扫描日志会收录，便于事后看"何时切了哪个模型 / 何时切回主模型"。
+    # Write straight to stderr: the scan log records it, so one can see "when which model was switched / when it switched back to the primary".
     print(f"[llm] {msg}", file=sys.stderr, flush=True)
 
 
 def _attempt_order(now: float) -> list[int]:
-    """本次调用的尝试顺序：可用的按优先级在前；冷却中的按优先级排到最后（仍兜底尝试）。
-    → 主模型没冷却时永远第一个试；主模型冷却中时备用优先，但主模型仍会在末尾被兜底尝试。"""
+    """The attempt order for this call: available ones first by priority; those in cooldown last by priority (still tried as fallbacks).
+    -> the primary is always tried first when not in cooldown; when the primary is in cooldown, backups go first but the primary is still tried last as a fallback."""
     n = len(PROVIDERS)
     avail = [i for i in range(n) if _down_until[i] <= now]
     cooling = [i for i in range(n) if _down_until[i] > now]
@@ -55,18 +60,18 @@ def _attempt_order(now: float) -> list[int]:
 
 
 def current_provider() -> dict:
-    """返回此刻『该优先使用』的 provider（chat() 本次会第一个尝试的那个）。
-    供 ChatOpenAI 智能体路径构建单例用：主模型恢复后这里即返回主模型，智能体随之切回。"""
+    """Return the provider that "should be preferred" right now (the one chat() will try first this time).
+    Used to build the singleton for the ChatOpenAI agent path: after the primary recovers this returns the primary, and the agent switches back accordingly."""
     with _lock:
         order = _attempt_order(time.monotonic())
         return PROVIDERS[order[0] if order else 0]
 
 
 def agent_provider() -> dict:
-    """序列构建智能体（ChatOpenAI 路径）**固定**使用的 provider，与 chat() 的三级切换解耦。
-    返回 llm_config.AGENT_PROVIDER_NAME 指定的那个（minimax）；找不到则回退 PROVIDERS 末位（兜底层）。
-    这条路径在单次 agent 运行内不做级联兜底，故绑定到最稳定的模型，避免主模型 429 把序列构建打成
-    fallback(无大模型)。sink 推断/规划不受影响，仍走 current_provider()/chat() 的优先级+冷却切换。"""
+    """The provider the sequence-construction agent (the ChatOpenAI path) uses **fixedly**, decoupled from chat()'s three-tier switching.
+    Returns the one named by llm_config.AGENT_PROVIDER_NAME (minimax); if not found, falls back to the last of PROVIDERS (the fallback tier).
+    This path does no cascading fallback within a single agent run, so it is bound to the most stable model, to avoid a primary-model 429
+    beating sequence construction into fallback (no LLM). Sink inference / planning are unaffected and still go through current_provider()/chat()'s priority+cooldown switching."""
     from calchas.llm_config import AGENT_PROVIDER_NAME
     for p in PROVIDERS:
         if p.get("name") == AGENT_PROVIDER_NAME:
@@ -75,8 +80,8 @@ def agent_provider() -> dict:
 
 
 def mark_current_down(reason: str = "") -> dict | None:
-    """把当前『该优先用』的 provider 记为冷却，返回下一个该优先用的 provider。
-    （保留接口兼容；主路径的失败冷却已在 chat() 内处理。）全部冷却中则返回 None。"""
+    """Mark the currently "preferred" provider as in cooldown, returning the next provider to prefer.
+    (Kept for interface compatibility; the main path's failure cooldown is already handled inside chat().) Returns None if all are in cooldown."""
     with _lock:
         now = time.monotonic()
         order = _attempt_order(now)
@@ -87,8 +92,8 @@ def mark_current_down(reason: str = "") -> dict | None:
         nxt_order = _attempt_order(time.monotonic())
         avail = [i for i in nxt_order if _down_until[i] <= time.monotonic()]
         new_idx = avail[0] if avail else None
-        _notify(f"模型 {PROVIDERS[cur]['name']} 不可用（{reason[:120]}）→ "
-                f"{'切换到 ' + PROVIDERS[new_idx]['name'] if new_idx is not None else '全部冷却中'}")
+        _notify(f"model {PROVIDERS[cur]['name']} unavailable ({reason[:120]}) -> "
+                f"{'switching to ' + PROVIDERS[new_idx]['name'] if new_idx is not None else 'all in cooldown'}")
         return PROVIDERS[new_idx] if new_idx is not None else None
 
 
@@ -97,7 +102,7 @@ class _ProviderError(RuntimeError):
 
 
 def _curl_one(prov: dict, messages: list, max_tokens: int, timeout: int) -> str:
-    """对单个 provider 发一次 chat 补全。成功返回正文，失败抛 _ProviderError。"""
+    """Send one chat completion to a single provider. Return the body on success, raise _ProviderError on failure."""
     payload = json.dumps({"model": prov["model"], "messages": messages, "max_tokens": max_tokens})
     try:
         p = subprocess.run(
@@ -107,26 +112,26 @@ def _curl_one(prov: dict, messages: list, max_tokens: int, timeout: int) -> str:
             input=payload, capture_output=True, text=True,
         )
     except Exception as e:  # noqa: BLE001
-        raise _ProviderError(f"curl 异常：{e}") from e
+        raise _ProviderError(f"curl exception: {e}") from e
     if p.returncode != 0:
-        raise _ProviderError(f"curl 失败({p.returncode})：{p.stderr.strip()[:160]}")
+        raise _ProviderError(f"curl failed ({p.returncode}): {p.stderr.strip()[:160]}")
     body, _, code = p.stdout.rpartition("\n")
     if code != "200":
-        raise _ProviderError(f"HTTP {code}：{body[:160]}")
+        raise _ProviderError(f"HTTP {code}: {body[:160]}")
     try:
         return json.loads(body)["choices"][0]["message"]["content"]
     except Exception as e:  # noqa: BLE001
-        raise _ProviderError(f"响应解析失败：{str(e)[:120]} / {body[:120]}") from e
+        raise _ProviderError(f"response parse failed: {str(e)[:120]} / {body[:120]}") from e
 
 
 def chat(messages: list, max_tokens: int = 2000, timeout: int = 120) -> str:
-    """走故障切换拿一次补全：按优先级（主模型优先，冷却中的降到末尾）逐个尝试；
-    成功 → 清除该 provider 冷却并返回（若切回了更高优先级模型，打恢复日志）；
-    一轮全部失败 → 抛 AllModelsUnavailable。"""
+    """Get one completion through failover: try each by priority (primary first, those in cooldown demoted to last);
+    on success -> clear that provider's cooldown and return (log a recovery if it switched back to a higher-priority model);
+    a whole round all failing -> raise AllModelsUnavailable."""
     global _last_used_idx
     n = len(PROVIDERS)
     if n == 0:
-        raise AllModelsUnavailable("未配置任何大模型（PROVIDERS 为空）")
+        raise AllModelsUnavailable("no model configured (PROVIDERS is empty)")
 
     with _lock:
         order = _attempt_order(time.monotonic())
@@ -136,23 +141,23 @@ def chat(messages: list, max_tokens: int = 2000, timeout: int = 120) -> str:
         try:
             out = _curl_one(prov, messages, max_tokens, timeout)
             with _lock:
-                _down_until[idx] = 0.0            # 恢复：清除本 provider 冷却
-                if idx < _last_used_idx:          # 切回了更高优先级（通常＝主模型恢复）
-                    _notify(f"模型 {prov['name']} 已恢复，切回（更高优先级）")
+                _down_until[idx] = 0.0            # recovery: clear this provider's cooldown
+                if idx < _last_used_idx:          # switched back to a higher priority (usually = the primary recovered)
+                    _notify(f"model {prov['name']} recovered, switched back (higher priority)")
                 _last_used_idx = idx
             return out
         except _ProviderError as e:
             errors.append(f"{prov['name']}:{e}")
             with _lock:
-                _down_until[idx] = time.monotonic() + COOLDOWN_SEC   # 失败：进入冷却
+                _down_until[idx] = time.monotonic() + COOLDOWN_SEC   # failure: enter cooldown
             if pos < len(order) - 1:
                 nxt = PROVIDERS[order[pos + 1]]
-                _notify(f"模型 {prov['name']} 失败（{str(e)[:100]}）→ 尝试 {nxt['name']}")
+                _notify(f"model {prov['name']} failed ({str(e)[:100]}) -> trying {nxt['name']}")
             continue
-    raise AllModelsUnavailable("配置的所有大模型均不可用：" + " | ".join(errors))
+    raise AllModelsUnavailable("all configured models are unavailable: " + " | ".join(errors))
 
 
 def complete(system: str, user: str, max_tokens: int = 2000, timeout: int = 120) -> str:
-    """system+user 两段式补全的便捷封装（旧 llmclient.complete 的等价入口）。"""
+    """Convenience wrapper for a two-part system+user completion (equivalent entry to the old llmclient.complete)."""
     return chat([{"role": "system", "content": system},
                  {"role": "user", "content": user}], max_tokens=max_tokens, timeout=timeout)

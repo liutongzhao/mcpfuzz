@@ -1,7 +1,7 @@
-"""扫描编排：驱动六个模块跑完一次检测，把过程发给 reporter，产物落到独立的运行目录。
+"""Scan orchestration: drive the six modules through one detection, send the process to the reporter, and land products in an independent run directory.
 
-单目标 scan_target() 是最小单元；批量（CLI 的 scan --batch/--all）在外层对多个目标循环调用它，
-每个目标独立一个运行目录，互不影响、互不中断。
+Single-target scan_target() is the minimal unit; the batch (the CLI's scan --batch/--all) loops over multiple
+targets outside it, each target getting an independent run directory, not affecting or interrupting each other.
 """
 from __future__ import annotations
 
@@ -22,8 +22,9 @@ from calchas.targetcfg import resolve_target
 
 
 class GatewayNotReady(RuntimeError):
-    """经网关时目标后端没能部署起来（等不到 tools>0 / 连不上）。批量模式据此判"部署失败"，
-    并在整批跑完后补跑一轮（见 cli.main.cmd_scan）——部署失败常是偶发的（下载慢、网关连接抖动）。"""
+    """When going via the gateway, the target backend failed to deploy (never reached tools>0 / could not connect).
+    Batch mode judges "deploy failure" on this, and retries one round after the whole batch finishes (see
+    cli.main.cmd_scan) — deploy failures are often transient (slow download, gateway-connection blip)."""
 
 
 def slugify(name: str) -> str:
@@ -31,7 +32,7 @@ def slugify(name: str) -> str:
 
 
 def make_run_dir(out_dir: Path, run_name: str | None, server_hint: str) -> Path:
-    """建一个独立运行目录；同时维护 <out_dir>/latest 指回它，方便随手看最近一次结果。"""
+    """Build an independent run directory; also maintain <out_dir>/latest pointing back to it, for a quick look at the most recent result."""
     ts = time.strftime("%Y%m%d-%H%M%S")
     name = run_name or f"{ts}__{slugify(server_hint)}"
     run_dir = Path(out_dir) / name
@@ -42,7 +43,7 @@ def make_run_dir(out_dir: Path, run_name: str | None, server_hint: str) -> Path:
             latest.unlink()
         latest.symlink_to(run_dir.name)
     except OSError:
-        pass   # 符号链接在部分文件系统/权限下可能失败，不影响本次运行本身
+        pass   # the symlink may fail on some filesystems/permissions, which does not affect this run itself
     return run_dir
 
 
@@ -59,9 +60,9 @@ def _param_sink_dict(p) -> dict:
 
 def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, reporter,
                 extra_headers: dict | None = None):
-    """跑完一个目标的完整检测。run_dir 由调用方（CLI）先建好——这样调用方可以在
-    run.start 事件发出之前，把 run.log / events.jsonl 的落盘 sink 挂到 reporter 上。
-    返回 findings_list。settings: config.Settings。reporter: cli.events.Reporter。
+    """Run one target's full detection. run_dir is pre-built by the caller (the CLI) — so the caller can attach
+    the run.log / events.jsonl persistence sinks to the reporter before the run.start event is emitted.
+    Returns findings_list. settings: config.Settings. reporter: cli.events.Reporter.
     """
     url, headers = resolve_target(target_arg, name)
     if extra_headers:
@@ -70,9 +71,9 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
     reporter.emit("run.start", target=target_arg, url=url, run_dir=str(run_dir))
     t0 = time.time()
 
-    # 网关集成（可选，不影响检测逻辑）：检测时才上线 + 冷启动适配
+    # Gateway integration (optional, does not affect the detection logic): enable only during detection + cold-start adaptation
     gw, gw_server = _gateway_setup(settings, url, reporter)
-    # 「加→扫→删」模式只在给了启动命令表时开启（仅全网大规模批量）；数据集扫描不给，走下面的 enable/disable
+    # The "add -> scan -> delete" mode is only enabled when a launch-command table is given (only large-scale whole-ecosystem batches); dataset scanning does not give one and uses the enable/disable below
     launch_map = _load_launch_map(settings.gateway_launch_map) if gw else None
     adhoc = launch_map is not None
     try:
@@ -80,30 +81,31 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
             entry = launch_map.get(gw_server) or {}
             launch = entry.get("launch") or []
             if not launch:
-                raise GatewayNotReady(f"网关后端 {gw_server} 不在启动命令表中，无法注册")
+                raise GatewayNotReady(f"gateway backend {gw_server} is not in the launch-command table, cannot register")
             try:
                 gw.add(gw_server, launch[0], launch[1:])
                 reporter.emit("gateway.add", server=gw_server)
             except Exception as e:
-                raise GatewayNotReady(f"注册网关后端 {gw_server} 失败：{str(e)[:200]}") from e
-        # 激活：gateway_lifecycle 下"检测时才上线"——enable 现场拉起 stdio 后端(disconnected→connected)，
-        # 用完在 finally 里 disable 释放；非该模式沿用旧的 reload 重置语义(gateway_reset)。
+                raise GatewayNotReady(f"failed to register gateway backend {gw_server}: {str(e)[:200]}") from e
+        # Activation: under gateway_lifecycle "enable only during detection" — enable spawns the stdio backend on
+        # the spot (disconnected -> connected), disabled in the finally to free resources; outside that mode it keeps the old reload reset semantics (gateway_reset).
         elif gw and settings.gateway_lifecycle:
             try:
                 gw.enable(gw_server)
                 reporter.emit("gateway.enable", server=gw_server)
             except Exception as e:
-                reporter.emit("gateway.error", error=f"启用后端 {gw_server} 失败：{str(e)[:200]}")
+                reporter.emit("gateway.error", error=f"failed to enable backend {gw_server}: {str(e)[:200]}")
         elif gw and settings.gateway_reset in ("before", "both"):
             _gateway_reset(gw, gw_server, "before", reporter)
         if gw:
-            # 连接后等后端真正就绪（connected 且 tools>0），否则网关会用自身身份+空工具表应答，
-            # 把"0 工具"当成功扫描。预算与冷启动超时挂钩，封顶 180s。
+            # After connecting, wait for the backend to truly be ready (connected and tools>0), otherwise the
+            # gateway answers with its own identity + an empty tool list, taking "0 tools" as a successful scan.
+            # The budget is tied to the cold-start timeout, capped at 180s.
             budget = max(60.0, min(settings.gateway_idle_ms / 1000.0, 180.0))
             ready, ntools = gw.wait_ready(gw_server, timeout=budget)
             reporter.emit("gateway.wait", server=gw_server, ready=ready, tools=ntools)
 
-        # 冷启动预算：经网关首个调用(catalog)会触发后端拉起，给足读超时
+        # Cold-start budget: via the gateway, the first call (catalog) triggers the backend to spawn, so give the read a generous timeout
         cat_timeout = settings.timeout
         if settings.gateway_base:
             cat_timeout = max(settings.timeout, settings.gateway_idle_ms / 1000.0)
@@ -112,15 +114,15 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
             catalog = fetch_catalog_sync(url, headers, retries=settings.retries, timeout=cat_timeout)
         except Exception as e:
             reporter.emit("connect.fail", error=str(e)[:300])
-            if gw:   # 经网关连不上 = 后端没部署起来
-                raise GatewayNotReady(f"网关后端 {gw_server} 连接失败：{str(e)[:200]}") from e
+            if gw:   # unable to connect via the gateway = the backend did not deploy
+                raise GatewayNotReady(f"gateway backend {gw_server} connection failed: {str(e)[:200]}") from e
             raise
 
-        # 经网关时，0 工具几乎一定是后端未就绪（网关用自身身份应答），不要静默产出空报告
+        # Via the gateway, 0 tools almost certainly means the backend is not ready (the gateway answers with its own identity), do not silently produce an empty report
         if gw and len(catalog.tools) == 0:
             reporter.emit("gateway.error",
-                          error=f"后端 {gw_server} 未就绪（工具数为 0，可能仍在冷启动/未连上），已终止本次扫描；请稍后重试")
-            raise GatewayNotReady(f"网关后端 {gw_server} 未就绪：tools=0")
+                          error=f"backend {gw_server} is not ready (tool count is 0, may still be cold-starting / not connected), this scan is aborted; please retry later")
+            raise GatewayNotReady(f"gateway backend {gw_server} is not ready: tools=0")
 
         reporter.emit("connect.ok", server_name=catalog.server_name, server_version=catalog.server_version,
                       protocol_version=catalog.protocol_version, tool_count=len(catalog.tools))
@@ -142,15 +144,15 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
                           and (only_sinks is None or any(c in only_sinks for c in p.class_weights))]
 
         oracle = Oracle(settings.oob_callback, settings.oob_query)
-        # Orchestrator 内部会在 cache_dir 下建 .plan_cache/ 子目录；传 run_dir 本身即可
+        # The Orchestrator internally creates a .plan_cache/ subdirectory under cache_dir; just pass run_dir itself
         orch = Orchestrator(url, headers, catalog, oracle, cache_dir=run_dir if settings.use_cache else None,
                             reporter=reporter, settings=settings)
         try:
             findings = orch.run(param_sinks, only_tools=only_tools, dry_run=settings.dry_run)
         finally:
-            orch.close()   # 释放智能体常驻事件循环
+            orch.close()   # release the agent's persistent event loop
 
-        # 可用性/DoS 发现是整工具级观测，不计入 per-param 五态统计（否则污染参数覆盖率）
+        # Availability/DoS findings are a whole-tool observation, not counted in the per-param five-state (otherwise it pollutes parameter coverage)
         dos = sum(f.sink == DOS for f in findings)
         param_findings = [f for f in findings if f.sink != DOS]
         confirmed = sum(f.status == CONFIRMED for f in param_findings)
@@ -159,7 +161,7 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
         unreached = sum(f.status == UNREACHED for f in param_findings)
         skipped = sum(f.status == SKIPPED for f in param_findings)
 
-        # findings.json 写全量（含 DoS 可用性发现），便于机读/追踪
+        # findings.json is written in full (incl. DoS availability findings), for machine reading/tracking
         (run_dir / "findings.json").write_text(
             json.dumps([asdict(f) for f in findings], ensure_ascii=False, indent=2))
 
@@ -173,21 +175,21 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
                       total=len(param_findings), dry_run=settings.dry_run)
         return findings
     finally:
-        # 收尾（即使检测中途异常也执行）：
-        #   加→扫→删 模式：删除这个临时注册的后端（结束其进程），网关里始终只有当前这一个；
-        #   数据集模式：只 disable（结束进程、后端保留在网关里），绝不删除；非 lifecycle 沿用 after-reload
+        # Finish (executed even if detection errors midway):
+        #   add -> scan -> delete mode: delete this temporarily-registered backend (ending its process), so the gateway always holds only the current one;
+        #   dataset mode: only disable (end the process, the backend stays in the gateway), never delete; outside lifecycle, keep the after-reload behavior
         if adhoc:
             try:
                 gw.delete(gw_server)
                 reporter.emit("gateway.delete", server=gw_server)
             except Exception as e:
-                reporter.emit("gateway.error", error=f"删除后端 {gw_server} 失败：{str(e)[:200]}")
+                reporter.emit("gateway.error", error=f"failed to delete backend {gw_server}: {str(e)[:200]}")
         elif gw and settings.gateway_lifecycle:
             try:
                 gw.disable(gw_server)
                 reporter.emit("gateway.disable", server=gw_server)
             except Exception as e:
-                reporter.emit("gateway.error", error=f"停用后端 {gw_server} 失败：{str(e)[:200]}")
+                reporter.emit("gateway.error", error=f"failed to disable backend {gw_server}: {str(e)[:200]}")
         elif gw and settings.gateway_reset in ("after", "both"):
             _gateway_reset(gw, gw_server, "after", reporter)
 
@@ -196,7 +198,7 @@ _LAUNCH_MAPS: dict[str, dict] = {}
 
 
 def _load_launch_map(path: str | None) -> dict | None:
-    """读「后端名 → {launch: [命令, 参数...]}」表（即批量单元 provision 产出的 namemap.json）；同一进程只读一次。"""
+    """Read the "backend name -> {launch: [command, args...]}" table (i.e. the namemap.json produced by the batch unit's provision); read once per process."""
     if not path:
         return None
     if path not in _LAUNCH_MAPS:
@@ -205,35 +207,35 @@ def _load_launch_map(path: str | None) -> dict | None:
 
 
 def _gateway_setup(settings, url, reporter):
-    """按 settings 建 GatewayClient 并定位后端名；未配置或无法定位则返回 (None, None)。"""
+    """Build a GatewayClient per settings and locate the backend name; return (None, None) if not configured or it cannot be located."""
     if not settings.gateway_base:
         return None, None
     from calchas.gateway import GatewayClient, server_name_from_url
     server = settings.gateway_server or server_name_from_url(url)
     if not server:
-        reporter.emit("gateway.error", error=f"无法从 URL 解析后端名，且未给 --gateway-server：{url}")
+        reporter.emit("gateway.error", error=f"cannot parse the backend name from the URL, and --gateway-server was not given: {url}")
         return None, None
     try:
         gw = GatewayClient(settings.gateway_base, token=settings.gateway_token,
                            user=settings.gateway_user, password=settings.gateway_password)
     except Exception as e:
-        reporter.emit("gateway.error", error=f"连接网关失败：{str(e)[:200]}")
+        reporter.emit("gateway.error", error=f"failed to connect to the gateway: {str(e)[:200]}")
         return None, None
     return gw, server
 
 
 def _gateway_reset(gw, server, when, reporter):
-    """用 reload 重置后端（stdio=杀进程重拉=干净态）。失败不中断检测，只记事件。"""
+    """Reset the backend via reload (stdio = kill and respawn = clean state). A failure does not interrupt detection, only records an event."""
     try:
         gw.reload(server)
-        time.sleep(1.5)   # 让网关注册到"后端已断开/重连中"；真正的就绪等待由 wait_ready 负责
+        time.sleep(1.5)   # let the gateway register "backend disconnected / reconnecting"; the actual readiness wait is handled by wait_ready
         reporter.emit("gateway.reset", server=server, when=when)
     except Exception as e:
-        reporter.emit("gateway.error", error=f"重置后端 {server} 失败：{str(e)[:200]}")
+        reporter.emit("gateway.error", error=f"failed to reset backend {server}: {str(e)[:200]}")
 
 
 def read_batch_file(path: str) -> list[str]:
-    """批量清单：每行一个目标（URL 或 mcpServers 配置文件路径），# 开头和空行忽略。"""
+    """Batch list: one target per line (a URL or an mcpServers config-file path), lines starting with # and blank lines ignored."""
     out = []
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         s = line.strip()
@@ -244,19 +246,19 @@ def read_batch_file(path: str) -> list[str]:
 
 def write_batch_summary(out_dir: Path, results: list[dict]) -> Path:
     """results: [{"target":..,"run_dir":..,"confirmed":..,"clean":..,"unreached":..,"error":..}]"""
-    lines = [f"# {APP_NAME} 批量扫描汇总", "",
-            f"- 生成时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"- 目标数：{len(results)}", "",
-            "| 目标 | 确认漏洞 | 疑似有 | 疑似无 | 未触达 | 未测成 | 产物 |",
+    lines = [f"# {APP_NAME} batch scan summary", "",
+            f"- Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"- Targets: {len(results)}", "",
+            "| Target | Confirmed | Suspected | Likely clean | Unreached | Not tested | Products |",
             "|---|---|---|---|---|---|---|"]
     for r in results:
         tries = r.get("attempt", 1)
         if r.get("error"):
-            kind = "部署失败" if r.get("deploy_failed") else "失败"
-            extra = f"（共试 {tries} 次）" if tries > 1 else ""
-            lines.append(f"| `{r['target']}` | — | — | — | — | — | {kind}{extra}：{r['error'][:100]} |")
+            kind = "deploy failure" if r.get("deploy_failed") else "failure"
+            extra = f" (tried {tries} times)" if tries > 1 else ""
+            lines.append(f"| `{r['target']}` | — | — | — | — | — | {kind}{extra}: {r['error'][:100]} |")
         else:
-            extra = f"（第 {tries} 次部署才成功）" if tries > 1 else ""
+            extra = f" (succeeded on deploy attempt {tries})" if tries > 1 else ""
             lines.append(f"| `{r['target']}` | {r['confirmed']} | {r.get('suspected', 0)} | {r['clean']} | "
                          f"{r['unreached']} | {r.get('skipped', 0)} | `{r['run_dir']}`{extra} |")
     text = "\n".join(lines) + "\n"

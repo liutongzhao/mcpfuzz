@@ -1,12 +1,12 @@
-"""第一步入口：连接一个 MCP 目标，打印并保存规范化工具清单。
+"""Step-one entry: connect to an MCP target, print and save the normalized tool catalog.
 
-用法：
-  python dump_catalog.py <URL>                 # 直连无鉴权目标
-  python dump_catalog.py <config.json> [名称]   # 读标准 mcpServers 配置（可带 headers 鉴权）
+Usage:
+  python dump_catalog.py <URL>                 # direct connect, no auth
+  python dump_catalog.py <config.json> [name]   # read a standard mcpServers config (optionally with header auth)
 
-config.json 为标准格式：
-  {"mcpServers": {"名称": {"url": "...", "headers": {"Authorization": "Bearer ..."}}}}
-结果保存到 out/<server>_catalog.json。
+config.json is the standard format:
+  {"mcpServers": {"name": {"url": "...", "headers": {"Authorization": "Bearer ..."}}}}
+Results are saved to out/<server>_catalog.json.
 """
 import json
 import re
@@ -24,7 +24,7 @@ def first_line(text, n):
 
 
 def resolve_target(arg: str, name: str | None):
-    """返回 (url, headers)。arg 为 .json 文件则按 mcpServers 配置解析，否则当作 URL。"""
+    """Return (url, headers). If arg is a .json file, parse it as an mcpServers config; otherwise treat it as a URL."""
     if arg.endswith(".json") and Path(arg).exists():
         cfg = json.loads(Path(arg).read_text())
         servers = cfg.get("mcpServers", cfg)
@@ -36,21 +36,21 @@ def resolve_target(arg: str, name: str | None):
 
 def main():
     if len(sys.argv) < 2:
-        sys.exit("用法: python dump_catalog.py <URL | config.json> [名称]")
+        sys.exit("usage: python dump_catalog.py <URL | config.json> [name]")
     url, headers = resolve_target(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
-    print(f"连接 {url} …" + ("（带鉴权头）" if headers else ""))
+    print(f"connecting {url} ..." + (" (with auth header)" if headers else ""))
     target = fetch_catalog_sync(url, headers)
-    print(f"服务器：{target.server_name} {target.server_version}  协议：{target.protocol_version}")
-    print(f"工具数：{len(target.tools)}\n")
+    print(f"server: {target.server_name} {target.server_version}  protocol: {target.protocol_version}")
+    print(f"tools: {len(target.tools)}\n")
 
     for t in target.tools:
         print(f"● {t.name}  —— {first_line(t.description, 70)}")
         if not t.params:
-            print("    （无参数）")
+            print("    (no parameters)")
         for p in t.params:
             flags = []
             if p.required:
-                flags.append("必填")
+                flags.append("required")
             if p.enum:
                 flags.append(f"enum={p.enum[:4]}")
             if p.default is not None:
@@ -62,7 +62,7 @@ def main():
     safe = re.sub(r"[^\w.-]", "_", (target.server_name or "server"))
     path = OUT / f"{safe}_catalog.json"
     path.write_text(json.dumps(target.to_dict(), ensure_ascii=False, indent=2))
-    print(f"\n已保存：{path}")
+    print(f"\nsaved: {path}")
 
 
 if __name__ == "__main__":

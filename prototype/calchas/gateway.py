@@ -1,12 +1,13 @@
-"""mcphub 网关客户端：仅用于实验编排（重置/查询后端 MCP），不参与检测判定。
+"""mcphub gateway client: used only for experiment orchestration (reset/query of backend MCPs), not part of the detection verdict.
 
-与检测核心解耦：检测器照常把 `/mcp/{server}` 当作一个普通 MCP URL 来扫描；本模块只
-在扫描前后调用网关的管理 API 做"重置(reload)"和"确认状态"，以适配按需启动(on-demand)。
-纯标准库；只认 mcphub 的通用管理 API，不含任何对被测服务的特判。
+Decoupled from the detection core: the detector still scans `/mcp/{server}` as an ordinary MCP URL; this module
+only calls the gateway's management API before/after a scan to "reset (reload)" and "confirm state", adapting to
+on-demand startup. Pure standard library; only speaks mcphub's generic management API, with no special-casing of
+any server under test.
 
-要点（2026-10-30 实测 v1.1.8）：
-- 鉴权 header 是 `x-auth-token`（不是 Authorization: Bearer）。
-- reload = `POST /api/servers/{name}/reload`，对 stdio 后端是杀进程重拉 = 状态归零。
+Key points (verified on v1.1.8, 2026-10-30):
+- The auth header is `x-auth-token` (not Authorization: Bearer).
+- reload = `POST /api/servers/{name}/reload`; for a stdio backend this kills and respawns the process = state reset.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from urllib.parse import urlparse
 
 
 def server_name_from_url(url: str) -> str | None:
-    """从 `/mcp/{server}` 直通端点 URL 解析后端服务器名；聚合口/智能路由/非该形式返回 None。"""
+    """Parse the backend server name from a `/mcp/{server}` passthrough endpoint URL; returns None for an aggregate port / smart routing / a non-matching form."""
     parts = [p for p in urlparse(url).path.split("/") if p]
     if "mcp" in parts:
         rest = parts[parts.index("mcp") + 1:]
@@ -28,7 +29,7 @@ def server_name_from_url(url: str) -> str | None:
 
 
 class GatewayClient:
-    """mcphub 管理 API 的最小客户端。token 与 password 二选一（有 token 优先）。"""
+    """Minimal client for the mcphub management API. token or password (token takes priority if both given)."""
 
     def __init__(self, base: str, token: str | None = None, user: str = "admin",
                  password: str | None = None, timeout: float = 10.0):
@@ -49,7 +50,7 @@ class GatewayClient:
                 raw = r.read().decode()
         except urllib.error.HTTPError as e:
             raw = e.read().decode(errors="replace")
-            raise RuntimeError(f"网关 {method} {path} → HTTP {e.code}: {raw[:200]}") from None
+            raise RuntimeError(f"gateway {method} {path} -> HTTP {e.code}: {raw[:200]}") from None
         return json.loads(raw) if raw else {}
 
     def _login(self, user: str, password: str) -> str:
@@ -57,50 +58,51 @@ class GatewayClient:
                       {"username": user, "password": password}, auth=False)
         tok = d.get("token")
         if not tok:
-            raise RuntimeError(f"网关登录失败：{d.get('message')}")
+            raise RuntimeError(f"gateway login failed: {d.get('message')}")
         return tok
 
     def reload(self, server: str) -> dict:
-        """强制重连上游：stdio 后端 = 杀进程重拉，回到干净状态（仅对已启用的后端有效）。"""
+        """Force a reconnect to the upstream: for a stdio backend = kill and respawn the process, back to a clean state (only effective on an already-enabled backend)."""
         return self._req("POST", f"/api/servers/{server}/reload")
 
     def enable(self, server: str) -> dict:
-        """启用并连接后端：stdio 后端会被现场拉起进程，变 connected。用于"检测时才上线"。"""
+        """Enable and connect the backend: a stdio backend has its process spawned on the spot, becoming connected. Used for "enable only during detection"."""
         return self._req("POST", f"/api/servers/{server}/toggle", {"enabled": True})
 
     def disable(self, server: str) -> dict:
-        """停用并断开后端：变 disconnected，并结束其 stdio 子进程（干净网关实测 add→disable 后子进程归 0）。
-        数据集扫描的收尾用它（后端保留在网关里，下次再 enable）。
-        注意：对「刚注册、仍在启动中」的后端立即 disable，可能触发 mcphub 内部 Connection closed 导致网关进程崩溃重启。"""
+        """Disable and disconnect the backend: becomes disconnected, and its stdio child process ends (on a clean gateway, add->disable brings child processes to 0).
+        Used at the finish of dataset scanning (the backend stays registered in the gateway, re-enabled next time).
+        Note: disabling a "just-registered, still-starting" backend immediately may trigger an mcphub-internal Connection closed and crash/restart the gateway process."""
         return self._req("POST", f"/api/servers/{server}/toggle", {"enabled": False})
 
     def add(self, server: str, command: str, args: list[str], tries: int = 6, wait: float = 10.0) -> None:
-        """注册一个 stdio 后端（仅大规模批量的「加→扫→删」模式使用；数据集扫描不调用）。
-        mcphub 注册即自动启动该后端。网关暂时连不上（如正在重启）时等待后重试，不静默丢弃；
-        已存在则视为成功。重试用尽仍失败则抛 RuntimeError，由调用方判「部署失败」。"""
+        """Register a stdio backend (only used by the "add -> scan -> delete" mode of large-scale batches; dataset scanning does not call it).
+        mcphub auto-starts the backend on registration. When the gateway is temporarily unreachable (e.g. restarting), wait and retry instead of silently dropping;
+        an already-existing one counts as success. If retries are exhausted it raises RuntimeError, for the caller to judge "deploy failure"."""
         body = {"name": server, "config": {"type": "stdio", "command": command, "args": list(args), "env": {}}}
         last = ""
         for _ in range(max(1, tries)):
             try:
                 self._req("POST", "/api/servers", body)
                 return
-            except RuntimeError as e:   # HTTP 错误：已存在算成功，其余直接上抛
+            except RuntimeError as e:   # HTTP error: "already exists" counts as success, otherwise re-raise
+                # match both the English and the Chinese-locale mcphub "already exists" wording, so a duplicate registration is treated as success
                 if "exist" in str(e).lower() or "已存在" in str(e):
                     return
                 raise
-            except (urllib.error.URLError, OSError) as e:   # 网关连不上：等它恢复
+            except (urllib.error.URLError, OSError) as e:   # gateway unreachable: wait for it to recover
                 last = str(e)
                 time.sleep(wait)
-        raise RuntimeError(f"注册后端 {server} 失败（网关持续不可用）：{last[:150]}")
+        raise RuntimeError(f"failed to register backend {server} (gateway persistently unavailable): {last[:150]}")
 
     def delete(self, server: str) -> dict:
-        """彻底移除后端（删除配置并结束其子进程）。仅大规模批量的「加→扫→删」模式在扫完后调用；
-        数据集扫描绝不调用（数据集后端是预先注册好的，只能 enable/disable）。"""
+        """Completely remove the backend (delete the config and end its child process). Only called by the "add -> scan -> delete" mode of large-scale batches after the scan;
+        dataset scanning never calls it (dataset backends are pre-registered, only enable/disable)."""
         return self._req("DELETE", f"/api/servers/{server}")
 
     def server_record(self, server: str) -> dict | None:
-        """查单个后端状态：用单后端端点 GET /api/servers/{name}，避开全量 /api/servers——
-        后者会枚举所有后端并探测状态，在后端数量多时极慢甚至超时（批量部署后尤其明显）。"""
+        """Query a single backend's state: use the single-backend endpoint GET /api/servers/{name}, avoiding the full /api/servers —
+        the latter enumerates all backends and probes their state, which is extremely slow or even times out when there are many backends (especially noticeable after a batch deploy)."""
         try:
             d = self._req("GET", f"/api/servers/{server}")
         except RuntimeError:
@@ -112,12 +114,13 @@ class GatewayClient:
         return rec.get("status") if rec else None
 
     def wait_ready(self, server: str, timeout: float = 120.0, interval: float = 2.0) -> tuple[bool, int]:
-        """轮询直到后端 status==connected **且已暴露工具(tools>0)**，返回 (ready, tool_count)。
+        """Poll until the backend status==connected **and it has exposed tools (tools>0)**, returning (ready, tool_count).
 
-        reload 刚发生时后端会被杀掉重拉（stdio 还要 npx 冷启动数秒），这期间网关会用自己的
-        身份+空工具表应答 MCP 握手——必须等到真正就绪再开扫，否则会把"0 工具"当成功扫描。
-        注意：按需启动(on-demand)的后端需先有一次 MCP 调用才会被拉起，对那类后端的预热应直接
-        发 MCP 调用（fetch_catalog 即是），本方法用于 reload 后 / 常驻后端的就绪等待。"""
+        Just after a reload, the backend is killed and respawned (stdio still needs a few seconds of npx cold start),
+        during which the gateway answers the MCP handshake with its own identity + an empty tool list — one must wait
+        for true readiness before scanning, otherwise "0 tools" is taken as a successful scan.
+        Note: an on-demand backend is only spawned after a first MCP call, so warming such a backend should directly
+        send an MCP call (fetch_catalog does this); this method is for readiness-waiting after a reload / for persistent backends."""
         deadline = time.time() + timeout
         n = 0
         while time.time() < deadline:

@@ -1,12 +1,14 @@
-"""约束感知的参数值生成（见 docs/参数值生成优化方案.md）。
+"""Constraint-aware parameter value generation (see the value-generation design doc).
 
-统一服务 P2（合法填充值）与 P4（约束感知载荷）——二者都是"生成满足参数声明约束的值"，
-P4 只多一步"在合法骨架里嵌载荷"。全部由参数自己在 JSON Schema 里声明的约束
-（pattern/format/type/长度/数值界）驱动，**不针对任何服务/参数名特判**。
+Unifies P2 (valid fill values) and P4 (constraint-aware payloads) — both "generate a value satisfying the
+parameter's declared constraints", P4 just adds one step "embed the payload into a valid skeleton". All driven
+by the constraints the parameter declares in its own JSON Schema (pattern/format/type/length/numeric-bounds),
+with **no special-casing of any service/parameter name**.
 
-- benign_value(param)：产一个满足约束的良性值（确定性阶梯；LLM 仅作预留兜底，默认不启用）。
-- inject_value(param, payload)：把攻击片段嵌进满足约束的合法骨架；参数被完全锁死（uuid/枚举/
-  纯数值/无自由位）→ 返回 None（如实表示"此参数扛不住这类注入"，不强塞、不算漏报）。
+- benign_value(param): produce a benign value satisfying the constraints (deterministic ladder; the LLM is a reserved fallback, off by default).
+- inject_value(param, payload): embed the attack fragment into a constraint-satisfying valid skeleton; a fully
+  locked-down parameter (uuid/enum/pure-numeric/no free slot) -> returns None (honestly "this parameter cannot
+  carry this injection", not force-fed, not counted as a miss).
 """
 from __future__ import annotations
 
@@ -17,11 +19,12 @@ import secrets
 
 _PATH_KEYS = ("path", "file", "dir", "folder", "location", "dest", "filepath")
 _URL_KEYS = ("url", "uri", "endpoint", "link", "href")
-# 目录型线索：命中则填"唯一的新目录路径"（让工具自己 makedirs），否则按文件填
+# Directory-type hints: on a hit, fill a "unique new directory path" (let the tool makedirs itself); otherwise fill as a file
 _DIR_KEYS = ("dir", "folder", "directory")
-# 限返回量型数值线索：命中则填"大值"（仍夹进声明的 [min,max]），避免最小值 1 把可观测输出截断、
-# 致判定致盲（如 fetch 类 max_length=1 把 SSRF 元数据回显截成 1 字符 → 漏报）。只认"限制返回量"
-# 语义；刻意不含 index/offset/start（填大反而跳过内容）、timeout/delay/retry/port（填大有副作用）。
+# Return-limit numeric hints: on a hit, fill a "large value" (still clamped into the declared [min,max]), to
+# avoid a minimum of 1 truncating the observable output and blinding the verdict (e.g. a fetch-type max_length=1
+# truncating the SSRF metadata echo to 1 char -> a miss). Only accepts "limit the return amount" semantics;
+# deliberately excludes index/offset/start (a large value would skip content), timeout/delay/retry/port (a large value has side effects).
 _LIMIT_KEYS = ("max_length", "maxlength", "max_len", "maxchars", "max_chars", "maxbytes", "max_bytes",
                "maxresults", "max_results", "num_results", "max_tokens", "maxtokens", "max_items",
                "maxitems", "page_size", "pagesize", "per_page", "perpage", "max_size", "maxsize",
@@ -31,18 +34,18 @@ _LIMIT_DESC = ("maximum number of", "max number of", "number of characters", "ch
 
 
 def _path_filler(param) -> str:
-    """路径型参数的良性填充值。两条铁律：
-    1) 每次唯一（带随机 token）——绝不用跨工具/跨运行共享的写死常量，否则会出现
-       "A 工具把它写成文件、B 工具又当目录用" 的互踩（见 output_dir 踩到 consciousness 残留）。
-    2) 按原型区分目录/文件——目录型给不存在的唯一目录(工具自己建)，文件型给唯一文件路径。
-    代价：填充值不再逐参数确定(引入随机)，但这是避免残留污染的必要取舍。"""
+    """Benign fill value for a path-type parameter. Two iron rules:
+    1) Unique each time (with a random token) — never a hardcoded constant shared across tools/runs, otherwise
+       "tool A writes it as a file, tool B uses it as a directory" clashes arise (see output_dir hitting a consciousness leftover).
+    2) Distinguish directory/file by shape — a directory-type gets a nonexistent unique directory (the tool creates it), a file-type gets a unique file path.
+    Cost: the fill value is no longer per-parameter deterministic (introduces randomness), but this is a necessary trade-off to avoid residual pollution."""
     name = (param.path or "").lower()
     desc = (getattr(param, "description", "") or "").lower()
     is_dir = any(k in name for k in _DIR_KEYS) or "directory" in desc or "folder" in desc
     tok = secrets.token_hex(4)
     return f"/tmp/{MARKER}_d{tok}" if is_dir else f"/tmp/{MARKER}_f{tok}.bin"
 
-# format 关键字 → 一个合法良性值（JSON Schema 标准词汇表，对所有服务一视同仁）
+# format keyword -> a valid benign value (the JSON Schema standard vocabulary, treated the same for all services)
 _FORMAT_VALUES = {
     "uuid": "00000000-0000-4000-8000-000000000000",
     "guid": "00000000-0000-4000-8000-000000000000",
@@ -66,7 +69,7 @@ _FORMAT_VALUES = {
     "json-pointer": "/x",
 }
 
-# 这些 format 刚性锁死，字符串注入无法承载 → inject_value 返 None
+# These formats are rigidly locked down, a string injection cannot be carried -> inject_value returns None
 _RIGID_FORMATS = {"uuid", "guid", "date", "date-time", "time", "duration",
                   "email", "idn-email", "ipv4", "ipv6", "hostname", "idn-hostname", "byte", "binary"}
 
@@ -74,8 +77,8 @@ _META = set("[](){}.*+?|^$\\")
 
 
 def _literal_prefix(pattern: str) -> str:
-    """从正则里取出"必须的字面前缀"：^ 之后到第一个正则元字符为止。
-    如 ^proj-[a-z0-9]+$ → 'proj-'；^user_\\d+ → 'user_'。覆盖最常见的"must start with X"。"""
+    """Take the "required literal prefix" from a regex: from after ^ up to the first regex metacharacter.
+    E.g. ^proj-[a-z0-9]+$ -> 'proj-'; ^user_\\d+ -> 'user_'. Covers the most common "must start with X"."""
     if not pattern:
         return ""
     p = pattern[1:] if pattern.startswith("^") else pattern
@@ -88,15 +91,15 @@ def _literal_prefix(pattern: str) -> str:
 
 
 def _pattern_injectable(pattern: str) -> bool:
-    """pattern 是否存在"自由位"可放载荷：有字面前缀，或含宽松量词（*/+/.*/\\w 等）。
-    纯定长字符类（如 ^[0-9]{6}$）视为无自由位。"""
+    """Whether the pattern has a "free slot" for a payload: a literal prefix, or a loose quantifier (*/+/.*/\\w etc.).
+    A purely fixed-length character class (e.g. ^[0-9]{6}$) is treated as having no free slot."""
     if _literal_prefix(pattern):
         return True
     return any(tok in pattern for tok in (".*", ".+", "\\w", "\\S", "[^", "*", "+"))
 
 
 def _enforce(param, v):
-    """对【生成的】值做长度/数值界收尾，保证其本身合法（不动 default/example/enum 等权威值）。"""
+    """Apply length/numeric-bound finishing to the [generated] value, ensuring it is itself valid (does not touch authoritative values like default/example/enum)."""
     if isinstance(v, str):
         if getattr(param, "min_length", None) and len(v) < param.min_length:
             v = v + "a" * (param.min_length - len(v))
@@ -108,7 +111,7 @@ def _enforce(param, v):
     if isinstance(v, (int, float)):
         lo, hi = getattr(param, "minimum", None), getattr(param, "maximum", None)
         step = 1 if param.type == "integer" else 0.1
-        # 把排他边界折算成"含界的合法下/上限"，再把 v 夹进 [lo_ok, hi_ok]
+        # Convert exclusive bounds into "inclusive valid lower/upper limits", then clamp v into [lo_ok, hi_ok]
         lo_ok = (lo + step) if (lo is not None and getattr(param, "exclusive_min", False)) else lo
         hi_ok = (hi - step) if (hi is not None and getattr(param, "exclusive_max", False)) else hi
         if lo_ok is not None and v < lo_ok:
@@ -119,7 +122,7 @@ def _enforce(param, v):
         if mult:
             k = round(v / mult) or 1
             cand = k * mult
-            if lo_ok is not None and cand < lo_ok:   # 对齐倍数后别掉出下界
+            if lo_ok is not None and cand < lo_ok:   # after aligning to the multiple, don't fall below the lower bound
                 cand = (int(lo_ok / mult) + 1) * mult
             v = cand
         if param.type == "integer":
@@ -131,13 +134,13 @@ _TYPE_DEFAULT = {"string": "test", "integer": 1, "number": 1, "boolean": True, "
 
 
 def benign_value(param):
-    """产一个满足参数声明约束的良性值。确定性阶梯：
-    default/example/enum(权威) → format → pattern前缀 → 名字启发 → 类型兜底(并 _enforce 收尾)。"""
+    """Produce a benign value satisfying the parameter's declared constraints. Deterministic ladder:
+    default/example/enum (authoritative) -> format -> pattern prefix -> name heuristic -> type fallback (with _enforce finishing)."""
     name = (param.path or "").lower()
     stringy = param.type in ("string", "union", "unknown")
     pathlike = stringy and any(k in name for k in _PATH_KEYS)
 
-    # 权威值：路径型相对默认值规避（保留原启发），否则 default/example/enum 直接用（已合法，不 _enforce）
+    # Authoritative values: for path-type, avoid a relative default (keep the original heuristic); otherwise use default/example/enum directly (already valid, no _enforce)
     if pathlike and getattr(param, "default", None) in (None, ".", "", "./", "cwd"):
         return _path_filler(param)
     if getattr(param, "default", None) is not None:
@@ -147,7 +150,7 @@ def benign_value(param):
     if param.enum:
         return param.enum[0]
 
-    # 约束驱动的生成（过 _enforce 收尾）
+    # Constraint-driven generation (through _enforce finishing)
     fmt = (getattr(param, "str_format", None) or "").lower()
     if fmt in _FORMAT_VALUES:
         return _enforce(param, _FORMAT_VALUES[fmt])
@@ -157,14 +160,14 @@ def benign_value(param):
         if pref:
             return _enforce(param, pref + "x")
 
-    # 名字启发（保留原 _fallback_literal 行为）
+    # Name heuristic (keeps the original _fallback_literal behavior)
     if stringy:
         if pathlike:
             return _path_filler(param)
         if any(k in name for k in _URL_KEYS):
             return "http://example.com/"
 
-    # 限返回量型数值参数：填大值（夹进声明界），别用最小值截断可观测输出致判定致盲
+    # Return-limit numeric parameter: fill a large value (clamped into the declared bounds), do not use the minimum which truncates observable output and blinds the verdict
     if param.type in ("integer", "number"):
         desc = (getattr(param, "description", "") or "").lower()
         if any(k in name for k in _LIMIT_KEYS) or any(k in desc for k in _LIMIT_DESC):
@@ -177,7 +180,7 @@ def benign_value(param):
 
 
 def _benign_item(param):
-    """数组元素的良性值（按声明的 item_type 粗略取）。"""
+    """Benign value for an array element (roughly by the declared item_type)."""
     it = getattr(param, "item_type", None)
     if it in ("integer", "number"):
         return 1
@@ -187,30 +190,30 @@ def _benign_item(param):
 
 
 def inject_value(param, payload: str):
-    """把 payload 嵌进满足约束的合法骨架（P4）。锁死无自由位 → None。
-    array/object 返回"带载荷的结构值"，更细的形状/minItems/key位由上层（executor._shaped_args）决定。"""
+    """Embed the payload into a constraint-satisfying valid skeleton (P4). Locked down with no free slot -> None.
+    array/object return a "structured value with the payload"; the finer shape/minItems/key-position is decided by the upper layer (executor._shaped_args)."""
     t = param.type
     if t in ("integer", "number", "boolean"):
-        return None   # 字符串注入进不去；宽松校验服务端由 P5 类型探测另处理
+        return None   # a string injection cannot get in; a loosely-validating server is handled separately by P5 type probing
     if param.enum:
         return None
     fmt = (getattr(param, "str_format", None) or "").lower()
     if fmt in _RIGID_FORMATS:
-        return None   # uuid/date/email/ipv4… 刚性，注入不可能
+        return None   # uuid/date/email/ipv4... are rigid, injection is impossible
     if t in ("string", "union", "unknown"):
         pat = getattr(param, "pattern", None)
         if pat:
             if not _pattern_injectable(pat):
-                return None   # 锚死定长、无自由位
+                return None   # anchored fixed-length, no free slot
             pref = _literal_prefix(pat)
             return _enforce(param, pref + payload)
-        return _enforce(param, payload)   # 无 pattern/format → 载荷本身（补足 min_length）
+        return _enforce(param, payload)   # no pattern/format -> the payload itself (padded to min_length)
     if t == "array":
         arr = [payload]
         n = getattr(param, "min_items", None) or 0
-        while len(arr) < n:                    # 补足 minItems，避免被 "Too small" 拒
+        while len(arr) < n:                    # pad to minItems, to avoid a "Too small" rejection
             arr.append(_benign_item(param))
         return arr
     if t == "object":
-        return {MARKER: payload}            # key 位注入由上层(executor._shaped_args)按 placement 另发
+        return {MARKER: payload}            # key-position injection is sent separately by the upper layer (executor._shaped_args) per placement
     return payload

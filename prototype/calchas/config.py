@@ -1,7 +1,7 @@
-"""配置：命令行参数 > 环境变量 > 配置文件 > 内置默认，逐层合并。
+"""Config: command-line args > environment variables > config file > built-in defaults, merged layer by layer.
 
-CLI 只负责把 argparse.Namespace 交给 build_settings；大模型 API key/中转地址仍留在
-llm_config.py（已 gitignore），不进这份通用配置。
+The CLI only hands the argparse.Namespace to build_settings; the LLM API key / relay address still live in
+llm_config.py (already gitignored), not in this generic config.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ DEFAULT_OOB_QUERY = os.environ.get("MCP_OOB_QUERY", "http://43.133.80.249:9100/_
 
 @dataclass
 class Settings:
-    # 判定 / 网络
+    # verdict / network
     oob_callback: str = DEFAULT_OOB_CALLBACK
     oob_query: str = DEFAULT_OOB_QUERY
     poll_rounds: int = 3
@@ -24,47 +24,48 @@ class Settings:
     timeout: float = 30.0
     retries: int = 3
     delay: float = 0.0
-    tool_timeout: float = 900.0   # 单工具检测总时长看门狗（秒）：一个工具从序列构建到攻击判定的总耗时
-                                   # 超过它就放弃该工具、把其参数记为"未测成"、换下一个，避免卡死整批。
-                                   # 默认 15 分钟；<=0 关闭看门狗。仅 Unix 主线程生效（容器内即是）。
-    # 大模型
+    tool_timeout: float = 900.0   # per-tool total-time watchdog (seconds): if a tool's total time from sequence
+                                   # construction to attack verdict exceeds it, abandon the tool, record its
+                                   # parameters as "not tested", and move to the next, to avoid stalling the whole
+                                   # batch. Default 15 minutes; <=0 disables the watchdog. Only effective on a Unix main thread (which is the case inside the container).
+    # LLM
     llm_sink: bool = True
     llm_plan: bool = True
-    sequence_agent: bool = True    # 序列构建智能体（闭环实跑产配方）；关闭则回退一次性规划
-    agent_rounds: int = 6          # 智能体最大修复轮次（recursion_limit = max(10, rounds*6)）
+    sequence_agent: bool = True    # the sequence-construction agent (runs the loop live to produce a recipe); if off, falls back to one-shot planning
+    agent_rounds: int = 6          # the agent's max repair rounds (recursion_limit = max(10, rounds*6))
     llm_workers: int = 6
     use_cache: bool = True
-    # 范围
+    # scope
     only_tools: tuple = ()
     exclude_tools: tuple = ()
     only_sinks: tuple = ()
     max_payloads: int | None = None
-    # 输出
+    # output
     out_dir: str = "runs"
     run_name: str | None = None
-    format: str = "auto"       # auto|rich|plain|json（auto：TTY 用 rich，否则 plain）
+    format: str = "auto"       # auto|rich|plain|json (auto: rich on a TTY, else plain)
     verbose: int = 0
     quiet: bool = False
-    # 安全 / 伦理
+    # safety / ethics
     dry_run: bool = False
     assume_yes: bool = False
-    # 网关（经 mcphub 检测，可选）：给了 gateway_base 才启用；检测逻辑不变，仅加重置/冷启动适配
-    gateway_base: str | None = None        # mcphub 基址，如 http://host:3000
-    gateway_token: str | None = None       # 管理 token（x-auth-token），与 password 二选一
+    # gateway (detect via mcphub, optional): enabled only when gateway_base is given; the detection logic is unchanged, only reset/cold-start adaptation is added
+    gateway_base: str | None = None        # mcphub base, e.g. http://host:3000
+    gateway_token: str | None = None       # admin token (x-auth-token), alternative to password
     gateway_user: str = "admin"
     gateway_password: str | None = None
-    gateway_server: str | None = None      # 该目标在网关里的后端名；默认从 /mcp/{server} URL 解析
-    gateway_reset: str = "off"             # off|before|after|both：扫描前/后用 reload 重置后端
-    gateway_lifecycle: bool = True         # 检测时才上线：扫前 enable 拉起后端、扫后 disable 杀进程释放资源，
-                                           # 避免批量检测时大量 stdio 后端常驻把网关压垮
-    gateway_idle_ms: int = 300000          # 网关空闲关闭超时（按需启动）；用作首连冷启动预算
-    gateway_launch_map: str | None = None  # 【仅全网大规模批量用】后端名→启动命令的 JSON 文件。给了才进入
-                                           # 「扫前 add 该后端→扫→扫完 delete」模式；不给(数据集扫描)则保持
-                                           # 预注册后端 enable→扫→disable、绝不删除。
-    after_target_cmd: str | None = None    # 每个目标扫完（lifecycle 已 disable）后执行的本地命令；
-                                           # 通用收尾钩子，典型用途：清理网关容器内 npm/uv 缓存防磁盘占满。
-                                           # 在"后端进程已停"的安全时刻运行，不会打断任何冷启动安装
-    after_target_cmd_timeout: float = 120.0  # 上述命令的超时（秒）
+    gateway_server: str | None = None      # this target's backend name in the gateway; default parsed from the /mcp/{server} URL
+    gateway_reset: str = "off"             # off|before|after|both: reset the backend via reload before/after the scan
+    gateway_lifecycle: bool = True         # enable only during detection: enable the backend before the scan, disable it after to kill the process and free resources,
+                                           # avoiding a crowd of persistent stdio backends overwhelming the gateway during batch detection
+    gateway_idle_ms: int = 300000          # gateway idle-shutdown timeout (on-demand start); used as the first-connect cold-start budget
+    gateway_launch_map: str | None = None  # [only for large-scale whole-ecosystem batches] a JSON file of backend-name -> launch command. Only given to enter
+                                           # the "add the backend before the scan -> scan -> delete after" mode; if not given (dataset scanning) it keeps
+                                           # the pre-registered backend enable -> scan -> disable, and never deletes.
+    after_target_cmd: str | None = None    # a local command run after each target is scanned (lifecycle already disabled);
+                                           # a generic finishing hook, typically to clean the gateway container's npm/uv cache to avoid filling the disk.
+                                           # Run at the safe moment when "the backend process has stopped", so it does not interrupt any cold-start install
+    after_target_cmd_timeout: float = 120.0  # timeout for the above command (seconds)
 
 
 def _load_toml(path: str | Path) -> dict:
@@ -80,7 +81,7 @@ def _load_toml(path: str | Path) -> dict:
 
 
 def build_settings(args) -> Settings:
-    """args 为 argparse.Namespace；只有显式给出（非 None）的属性才会覆盖上一层。"""
+    """args is an argparse.Namespace; only explicitly-given (non-None) attributes override the previous layer."""
     settings = Settings()
 
     cfg_path = getattr(args, "config", None)

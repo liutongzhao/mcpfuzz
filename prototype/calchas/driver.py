@@ -1,6 +1,7 @@
-"""驱动层：连接 MCP 目标（Streamable HTTP），列工具 / 调用工具。
+"""Driver layer: connect to an MCP target (Streamable HTTP), list tools / call tools.
 
-基于官方 mcp SDK，不自行实现协议/传输。支持可选 HTTP 头（如鉴权），面向任意 MCP 服务通用。
+Built on the official mcp SDK, without implementing the protocol/transport ourselves. Supports optional HTTP
+headers (e.g. for auth), generic across any MCP service.
 """
 from __future__ import annotations
 
@@ -16,28 +17,30 @@ from .catalog import Target, nest_arguments, normalize_tool
 def _make_http_client(headers: dict | None, timeout: float | None):
     if not headers and not timeout:
         return None
-    # 用 mcp SDK 自己用的那个 httpx 模块来构造 Timeout：不同 mcp 版本底层可能是 httpx 或
-    # httpx2，类型必须和 SDK 一致，否则 SDK 内部超时运算会报 "float + Timeout" 之类的类型错误
-    # （升级到 mcp 1.30 后，经网关连接即因此失败）。优先取 SDK 模块里的 httpx，兜底再自行导入。
+    # Build the Timeout using the same httpx module the mcp SDK itself uses: different mcp versions may use
+    # httpx or httpx2 underneath, and the type must match the SDK's, otherwise the SDK's internal timeout
+    # arithmetic raises a type error like "float + Timeout" (connecting via the gateway failed exactly this way
+    # after upgrading to mcp 1.30). Prefer the httpx inside the SDK module, falling back to importing it ourselves.
     from mcp.client import streamable_http as _sh
     _httpx = getattr(_sh, "httpx", None)
     if _httpx is None:
         try:
             import httpx as _httpx
-        except ImportError:  # 老环境用的是 httpx2 替代包
+        except ImportError:  # older environments use the httpx2 replacement package
             import httpx2 as _httpx
     t = None
     if timeout:
-        # read 必须留足：streamable HTTP 的响应走 SSE，服务器会把流长时间开着等结果；
-        # 把 read 也压到跟 connect/write/pool 一样短，会在流还没吐数据时就被掐断。
+        # read must be generous: a streamable-HTTP response goes over SSE, and the server keeps the stream open
+        # for a long time waiting for the result; squeezing read down to the same short value as connect/write/pool
+        # would cut it off before the stream has emitted any data.
         t = _httpx.Timeout(timeout, read=max(timeout, 300.0))
     return create_mcp_http_client(headers=headers or None, timeout=t)
 
 
 async def _with_session(url: str, headers: dict | None, fn, timeout: float | None = None):
-    """建立会话，执行 fn(session, init) 并返回其结果。
+    """Establish a session, execute fn(session, init) and return its result.
 
-    terminate_on_close=False 并在取到结果后吞掉拆解阶段异常（SDK 关闭连接偶发报错）。
+    terminate_on_close=False and, after obtaining the result, swallow teardown-phase exceptions (the SDK occasionally errors while closing the connection).
     """
     http_client = _make_http_client(headers, timeout)
     captured: dict = {}
@@ -65,10 +68,10 @@ async def _retry(coro_factory, what: str, url: str, retries: int):
             last = e
             if attempt < retries:
                 await asyncio.sleep(1.0 * attempt)
-    raise RuntimeError(f"{what} {url} 失败（重试 {retries} 次）：{last}")
+    raise RuntimeError(f"{what} {url} failed (after {retries} retries): {last}")
 
 
-# ---------- 列工具 ----------
+# ---------- list tools ----------
 
 async def fetch_catalog(url: str, headers: dict | None = None, retries: int = 4,
                         timeout: float | None = None) -> Target:
@@ -79,7 +82,7 @@ async def fetch_catalog(url: str, headers: dict | None = None, retries: int = 4,
                       server_version=getattr(info, "version", None),
                       protocol_version=str(proto) if proto else None,
                       tools=tools)
-    return await _retry(once, "连接", url, retries)
+    return await _retry(once, "connect", url, retries)
 
 
 async def _collect_tools(session, init):
@@ -91,30 +94,31 @@ async def _collect_tools(session, init):
     return getattr(init, "server_info", None), getattr(init, "protocol_version", None), tools
 
 
-# ---------- 调用工具 ----------
+# ---------- call tool ----------
 
 async def call_tool(url: str, tool: str, arguments: dict,
                     headers: dict | None = None, retries: int = 3,
                     timeout: float | None = None) -> dict:
-    """调用一个工具，返回 {text, is_error, raw}。text 为返回内容拼接的纯文本。"""
+    """Call one tool, returning {text, is_error, raw}. text is the plain text of the returned content concatenated."""
     async def once():
         return await _with_session(url, headers, lambda s, i: _do_call(s, tool, arguments), timeout)
-    return await _retry(once, f"调用 {tool}", url, retries)
+    return await _retry(once, f"call {tool}", url, retries)
 
 
 async def _do_call(session, tool, arguments):
-    # 发送前把扁平的点号/方括号键实参还原成工具期望的嵌套结构（与 flatten_schema 对称）。
-    # 这是全局唯一的 tools/call 出口，放这里可让载荷调用、前置步骤、兜底计划都统一受益。
+    # Before sending, rebuild the flat dotted/bracketed-key arguments into the nested structure the tool expects
+    # (symmetric with flatten_schema). This is the single global tools/call exit, so placing it here lets payload
+    # calls, prerequisite steps and the fallback plan all benefit uniformly.
     sent = nest_arguments(arguments)
     res = await session.call_tool(tool, sent)
     content = getattr(res, "content", None) or []
     text = "\n".join((getattr(b, "text", "") or "") for b in content)
     is_error = getattr(res, "is_error", getattr(res, "isError", False))
-    # args_sent 回传真正发到线上的嵌套实参，供日志如实记录（便于 debug 复现）。
+    # args_sent returns the actual nested arguments sent on the wire, so the log records them faithfully (for debug reproduction).
     return {"text": text, "is_error": bool(is_error), "raw": res, "args_sent": sent}
 
 
-# ---------- 同步封装 ----------
+# ---------- synchronous wrappers ----------
 
 def fetch_catalog_sync(url: str, headers: dict | None = None, retries: int = 4,
                        timeout: float | None = None) -> Target:
@@ -127,17 +131,18 @@ def call_tool_sync(url: str, tool: str, arguments: dict,
     return asyncio.run(call_tool(url, tool, arguments, headers, retries, timeout))
 
 
-# ---------- 持久会话（一条调用序列共用一个连接） ----------
+# ---------- persistent session (one connection shared by a call sequence) ----------
 
 @asynccontextmanager
 async def open_session(url: str, headers: dict | None = None, timeout: float | None = None):
-    """打开并初始化一个会话，供多次 call_on 复用；退出时关闭。
+    """Open and initialize a session for reuse by multiple call_on; closed on exit.
 
-    关键：只吞掉"成功 yield 之后"（会话拆解阶段 SDK 偶发报错）的异常；连接/初始化
-    等 yield 之前的失败必须向上抛出。否则生成器"没 yield 就结束"，调用处 `async with`
-    会抛出含义全无的 `RuntimeError: generator didn't yield`，把真实错误（连接被拒/
-    初始化失败/服务器无响应）彻底掩盖——这正是之前整轮扫描从中途开始级联失败、
-    却只在日志里留下一句 `generator didn't yield` 的根因。
+    Key: only swallow exceptions from "after a successful yield" (the session-teardown phase, where the SDK
+    occasionally errors); a failure before yield (connection/initialization) must be raised. Otherwise the
+    generator "ends without yielding", and the caller's `async with` raises a meaningless
+    `RuntimeError: generator didn't yield`, completely masking the real error (connection refused /
+    initialization failure / server unresponsive) — which was exactly the root cause of a whole scan round
+    cascading into failure from midway, while the log left only a single `generator didn't yield`.
     """
     http_client = _make_http_client(headers, timeout)
     yielded = False
@@ -151,16 +156,17 @@ async def open_session(url: str, headers: dict | None = None, timeout: float | N
                 try:
                     yield session
                 except BaseException:
-                    # 异常来自 with 正文（调用方），经 athrow 注入到此 yield 点。
-                    # 必须向上抛，绝不能和"拆解阶段偶发报错"一样吞掉：否则正文的 return 丢失、
-                    # async with 把异常吞成功退出，调用方拿到的是 None（既非结果也非异常），
-                    # 继而在上层 `findings += None` / `res.get(...)` 处炸（且间歇、极难定位）。
+                    # The exception comes from the with body (the caller), injected into this yield point via athrow.
+                    # It must be raised, never swallowed like a "teardown-phase occasional error": otherwise the body's
+                    # return is lost, async with swallows the exception and exits successfully, the caller gets None
+                    # (neither a result nor an exception), and then blows up at an upper layer at `findings += None` /
+                    # `res.get(...)` (intermittently, extremely hard to locate).
                     body_failed = True
                     raise
     except Exception:
         if not yielded or body_failed:
-            raise  # yield 之前失败（连接/初始化）或正文失败 → 抛出，交上层重试 / 记录真实原因
-        # 仅"yield 成功之后的纯拆解阶段"SDK 偶发报错：调用结果已在正文收集，吞掉即可
+            raise  # failure before yield (connection/initialization) or body failure -> raise, for the upper layer to retry / record the real reason
+        # only an "SDK occasional error in the pure teardown phase after a successful yield": the result was already collected in the body, so swallow it
     finally:
         if http_client is not None:
             await http_client.aclose()
@@ -168,11 +174,12 @@ async def open_session(url: str, headers: dict | None = None, timeout: float | N
 
 async def ping(url: str, headers: dict | None = None, timeout: float | None = None,
                raise_on_fail: bool = False) -> bool:
-    """轻量存活探测：仅建立会话并 initialize，成功返回 True。
+    """Lightweight liveness probe: only establish a session and initialize; return True on success.
 
-    用于区分"服务器被打挂/无响应"（结果，甚至是 DoS 信号）与"客户端自身会话异常"（bug）。
-    raise_on_fail=True 时，失败不返回 False 而是把真实异常抛出，供上层记录崩溃原因——
-    避免把"为什么探测失败"无声吞掉，导致真 DoS 与误报在日志里无法区分。
+    Used to distinguish "the server was beaten down / unresponsive" (a result, even a DoS signal) from "a
+    client-side session anomaly" (a bug). When raise_on_fail=True, a failure does not return False but raises the
+    real exception, for the upper layer to record the crash reason — avoiding silently swallowing "why the probe
+    failed", which would make a real DoS indistinguishable from a false positive in the log.
     """
     try:
         await _with_session(url, headers, lambda s, i: True, timeout)
@@ -184,5 +191,5 @@ async def ping(url: str, headers: dict | None = None, timeout: float | None = No
 
 
 async def call_on(session, tool: str, arguments: dict) -> dict:
-    """在已有会话上调用一个工具，返回 {text, is_error, raw}。"""
+    """Call one tool on an existing session, returning {text, is_error, raw}."""
     return await _do_call(session, tool, arguments)

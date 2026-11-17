@@ -1,7 +1,8 @@
-"""目录解析：把原始 tools/list 规范化为统一的工具/参数结构。
+"""Catalog parsing: normalize the raw tools/list into a uniform tool/parameter structure.
 
-设计目标：把每个工具参数（含嵌套 object、array）摊平成可注入的叶子参数，
-用点号/方括号路径表达层级（如 config.timeout、files[].path），供后续 sink 推断与载荷生成使用。
+Design goal: flatten each tool parameter (including nested object, array) into injectable leaf parameters,
+expressing the hierarchy with a dotted / bracketed path (e.g. config.timeout, files[].path), for downstream
+sink inference and payload generation.
 """
 from __future__ import annotations
 
@@ -10,21 +11,21 @@ from dataclasses import dataclass, field, asdict
 
 @dataclass
 class Param:
-    path: str                 # 参数路径，如 "path" / "config.timeout" / "files[].name"
+    path: str                 # parameter path, e.g. "path" / "config.timeout" / "files[].name"
     type: str                 # string/number/integer/boolean/object/array/union/unknown
     required: bool
     description: str | None = None
     enum: list | None = None
     default: object = None
     example: object = None
-    item_type: str | None = None   # 当 type==array 时，元素类型
-    # —— JSON Schema 声明的约束（供约束感知的值/载荷生成用；见 docs/参数值生成优化方案.md）——
-    pattern: str | None = None          # pattern（正则）
-    str_format: str | None = None       # format：uuid/date-time/email/uri/ipv4/hostname…
+    item_type: str | None = None   # element type when type==array
+    # -- constraints declared in JSON Schema (for constraint-aware value/payload generation; see the value-generation design doc) --
+    pattern: str | None = None          # pattern (regex)
+    str_format: str | None = None       # format: uuid/date-time/email/uri/ipv4/hostname...
     min_length: int | None = None       # minLength
     max_length: int | None = None       # maxLength
-    minimum: float | None = None        # minimum / exclusiveMinimum(数值形)
-    maximum: float | None = None        # maximum / exclusiveMaximum(数值形)
+    minimum: float | None = None        # minimum / exclusiveMinimum (numeric form)
+    maximum: float | None = None        # maximum / exclusiveMaximum (numeric form)
     exclusive_min: bool = False
     exclusive_max: bool = False
     multiple_of: float | None = None    # multipleOf
@@ -53,7 +54,7 @@ class Target:
 
 
 def _norm_type(schema: dict) -> str:
-    """从 JSON Schema 片段推断类型，兼容 type 为列表、anyOf/oneOf 的情况。"""
+    """Infer the type from a JSON Schema fragment, handling type being a list, or anyOf/oneOf."""
     t = schema.get("type")
     if isinstance(t, str):
         return t
@@ -81,10 +82,10 @@ def _example(schema: dict):
 
 
 def _constraints(sub: dict) -> dict:
-    """从一个属性子 schema 里读出声明的约束，供约束感知的值/载荷生成用。只读、不改行为。"""
+    """Read the declared constraints from a property sub-schema, for constraint-aware value/payload generation. Read-only, does not change behavior."""
     mn, emn = sub.get("minimum"), sub.get("exclusiveMinimum")
     mx, emx = sub.get("maximum"), sub.get("exclusiveMaximum")
-    # draft-07: exclusiveMinimum/Maximum 是数值；draft-04: 是布尔(配合 minimum/maximum)
+    # draft-07: exclusiveMinimum/Maximum are numeric; draft-04: boolean (paired with minimum/maximum)
     minimum = mn if mn is not None else (emn if isinstance(emn, (int, float)) and not isinstance(emn, bool) else None)
     maximum = mx if mx is not None else (emx if isinstance(emx, (int, float)) and not isinstance(emx, bool) else None)
     excl_min = (emn is True) or (mn is None and isinstance(emn, (int, float)) and not isinstance(emn, bool))
@@ -105,7 +106,7 @@ def _constraints(sub: dict) -> dict:
 
 
 def flatten_schema(schema: dict, prefix: str = "", parent_required: bool = True) -> list[Param]:
-    """递归摊平 JSON Schema 的 properties，返回叶子参数列表。"""
+    """Recursively flatten a JSON Schema's properties, returning a list of leaf parameters."""
     out: list[Param] = []
     props = schema.get("properties") or {}
     required = set(schema.get("required") or [])
@@ -139,10 +140,10 @@ def normalize_tool(name: str, description: str | None, input_schema: dict | None
 
 
 def _path_tokens(key: str) -> list[tuple[str, bool]]:
-    """把扁平参数路径拆成 [(名字, 是否数组层), ...]。
-    与 flatten_schema 的约定对称：`.` 表示嵌套 object，`xxx[]` 表示该层是数组。
-    例：`author.name` → [(author,False),(name,False)]；
-        `files[].path` → [(files,True),(path,False)]；`tags[]` → [(tags,True)]。
+    """Split a flat parameter path into [(name, is_array_level), ...].
+    Symmetric with flatten_schema's convention: `.` means a nested object, `xxx[]` means that level is an array.
+    E.g. `author.name` -> [(author,False),(name,False)];
+         `files[].path` -> [(files,True),(path,False)]; `tags[]` -> [(tags,True)].
     """
     toks: list[tuple[str, bool]] = []
     for part in key.split("."):
@@ -152,16 +153,17 @@ def _path_tokens(key: str) -> list[tuple[str, bool]]:
 
 
 def nest_arguments(flat: dict) -> dict:
-    """把 flatten_schema 产生的扁平点号/方括号键实参，还原成 MCP 工具期望的嵌套结构。
+    """Rebuild the flat dotted/bracketed-key arguments produced by flatten_schema into the nested structure the MCP tool expects.
 
-    这是 flatten_schema 的逆操作：检测各环节内部统一用 `author.name`、`files[].path`
-    这类叶子路径作 key，真正发到 tools/call 之前必须重组回 {author:{name:..}}、
-    {files:[{path:..}]}，否则带 object/array 参数的工具会因实参结构不对而报错
-    （表现为大量"未触达"与前置步骤级联失败）。对任意 MCP 通用，不含任何工具特判。
+    This is the inverse of flatten_schema: internally the detection stages uniformly use leaf paths like
+    `author.name`, `files[].path` as keys, but just before sending to tools/call they must be reassembled into
+    {author:{name:..}}, {files:[{path:..}]}, otherwise tools with object/array parameters error out due to the
+    wrong argument structure (manifesting as lots of "unreached" and cascading prerequisite-step failures).
+    Generic across any MCP, with no tool special-casing.
 
-    - 不含 `.`/`[]` 的普通键原样透传。
-    - 值本身已是 dict/list（调用方直接给了结构化值）时，按普通键原样放入，不再拆分。
-    - 结构冲突（同名既当标量又当容器）时保守跳过该键，绝不抛异常打断调用。
+    - Plain keys without `.`/`[]` pass through verbatim.
+    - If the value is already a dict/list (the caller gave a structured value directly), place it verbatim under the plain key, without splitting.
+    - On a structural conflict (the same name used as both a scalar and a container), conservatively skip that key, never raising to interrupt the call.
     """
     if not isinstance(flat, dict):
         return flat

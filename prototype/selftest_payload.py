@@ -1,4 +1,4 @@
-"""载荷合成自测（纯单元，不发请求、不连网络）：构造类别软先验 → 看生成的探针套件。"""
+"""Payload-synthesis self-check (pure unit, sends no request, no network): build a class soft prior -> inspect the generated probe battery."""
 from calchas.oracle import Oracle
 from calchas.payload import PayloadSynthesizer
 from calchas.sink.types import AI, CI, FLOOR, PT, SSRF, ParamSinkPrior
@@ -14,16 +14,16 @@ def show(title, prior):
         print(f"       value = {p.value!r}  expect={exp}  delay={p.delay_target}")
 
 
-# path 参数：PT 高(0.7)、其余地板(0.1) —— 复刻 git_tag.path：CI 地板也应出若干探针（不漏）
-show("path：PT 高 + CI/AI/SSRF 地板",
+# path parameter: PT high (0.7), the rest at the floor (0.1) — mirroring git_tag.path: the CI floor should also emit a few probes (no miss)
+show("path: PT high + CI/AI/SSRF floor",
      ParamSinkPrior("someTool", "path", "string",
                     {CI: FLOOR, AI: FLOOR, PT: 0.7, SSRF: FLOOR}, False, "", {PT: ["rule"]}))
 
-# SSRF 高
-show("url：SSRF 高",
+# SSRF high
+show("url: SSRF high",
      ParamSinkPrior("fetchTool", "url", "string",
                     {CI: FLOOR, AI: FLOOR, PT: FLOOR, SSRF: 1.0}, False, "", {SSRF: ["rule"]}))
 
-# 惰性参数 → 空
-assert synth.synthesize(ParamSinkPrior("t", "flag", "boolean", {}, True, "布尔")) == []
-print("\n自测完成（仅生成，未发送）")
+# inert parameter -> empty
+assert synth.synthesize(ParamSinkPrior("t", "flag", "boolean", {}, True, "boolean")) == []
+print("\nself-check done (generation only, nothing sent)")
