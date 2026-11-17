@@ -30,7 +30,7 @@
 | 目录 | 放什么 | 不放什么 | 进 git |
 |---|---|---|---|
 | `calchas/` | 检测工具源码。子模块：`cli/` 命令行、`sink/` 阶段一参数分类、`orchestrator/` 阶段二序列构建与攻击编排、`payload/` 载荷电池、`oracle/` 阶段三执行确认；`__about__.py` 存名字/版本 | 实验脚本、数据、针对个别服务的特判 | 是（`payload/_raw/` 词表除外） |
-| `dev/` | 开发者自用的调试/自检脚本：`dump_catalog.py`、`dump_sinks.py`、`selftest_oracle.py`（要连靶机）。在仓库根用 `.venv/bin/python dev/xxx.py` 运行 | 用户会用到的功能（这类功能做成 `calchas` 子命令） | 是 |
+| `dev/` | 开发者自用的脚本：调试/自检 `dump_catalog.py`、`dump_sinks.py`、`selftest_oracle.py`（要连靶机），在仓库根用 `.venv/bin/python dev/xxx.py` 运行；发版 `release.sh`（改版本号→打包→检查→试装→上传→打标签） | 用户会用到的功能（这类功能做成 `calchas` 子命令） | 是 |
 | `deploy/services/` | 服务器 A 上长期运行的实验服务的 compose 配置：`oob/`（calchas-oob）、`gateway/`（calchas-gateway + `configure.sh`），两者通过 docker 网络 `calchas-net` 互通。同步到 A 的 `~/experiment/services/` 运行 | 运行数据 `data/`、密码 `.env` | 是（`data/`、`.env` 除外） |
 | `deploy/cells/` | 大规模批量检测的 docker-compose 单元（gateway+oob+runner）、镜像构建与批次装配脚本 | 镜像包 `*.tar.gz`、真实批次清单、运行结果、运行台账 | 是（产物除外，见 `deploy/cells/.gitignore`） |
 | `deploy/infra/oob/` | OOB 带外回连采集器 | — | 是 |
@@ -55,6 +55,8 @@
 python3 -m venv .venv && .venv/bin/pip install -e .   # 开发安装（仓库根）
 .venv/bin/calchas selftest                             # 离线自检
 .venv/bin/python -m build                              # 打包到 dist/
+dev/release.sh 0.1.0                                   # 发版演练（打包+检查+试装，不上传）
+dev/release.sh 0.1.0 --upload                          # 正式发版到 PyPI（加 --testpypi 则发到测试站）
 ```
 
 ## 待办
