@@ -1,4 +1,4 @@
-"""编排器：序列构建（发射台）+ 逐跳回放验证 + 多通道判定 + 五态结论。"""
+"""Orchestrator: sequence construction (launch pad) + hop-by-hop replay verification + multi-channel verdict + five-state conclusion."""
 from .core import Orchestrator
 from .types import (CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED,
                     Finding, Plan, Step)

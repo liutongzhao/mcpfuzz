@@ -1,6 +1,7 @@
-"""编排器门面：把前四步串成检测流水线。
+"""Orchestrator facade: chains the first four steps into a detection pipeline.
 
-对每个"有 sink 的工具"：规划(一次,缓存) → 开持久会话 → 建发射台 → 逐参数发载荷验证 → 汇总 Finding。
+For each "tool with a sink": plan (once, cached) -> open a persistent session -> build the launch pad ->
+send payloads per parameter and verify -> aggregate into Findings.
 """
 from __future__ import annotations
 
@@ -17,13 +18,16 @@ from . import agent, planner
 from .executor import run_tool
 from .types import SKIPPED, Finding, Plan
 
-# 智能体探索的事件循环：**进程级常驻**（跨所有服务/Orchestrator 共用一个）。
-# 为什么不能每服务新建/关闭：LangGraph 的 LLM 异步客户端(ChatOpenAI/httpx)把底层连接缓存在首次
-# 使用的事件循环上；若每个服务换新循环、扫完就关，下一个服务首个 agent 调用复用到的缓存客户端仍
-# 绑在已关闭的旧循环上 → "Event loop is closed"，致每个服务的第一个多步工具序列构建崩溃（P7）。
-# 进程级常驻一个循环即根治（攻击阶段用各自独立的 asyncio.run 临时循环，互不影响）。
-# 假设：批扫是**串行**的（cli 对目标逐个循环），任一时刻只有一个 _agent_run 在跑。若将来并行化
-# 或在多线程宿主里并发使用，需换成每线程循环或加重入保护，否则会 "event loop is already running"。
+# The agent-exploration event loop: **process-level persistent** (one shared across all servers/Orchestrators).
+# Why it cannot be created/closed per server: LangGraph's async LLM client (ChatOpenAI/httpx) caches the
+# underlying connection on the event loop it is first used on; if each server swaps in a new loop and closes it
+# after scanning, the next server's first agent call reuses a cached client still bound to the closed old loop
+# -> "Event loop is closed", crashing every server's first multi-step sequence construction (P7).
+# One process-level persistent loop fixes it at the root (the attack phase uses its own independent asyncio.run
+# temporary loops, which do not interfere).
+# Assumption: batch scanning is **serial** (the CLI loops over targets one by one), so at any moment only one
+# _agent_run is running. If this is parallelized in the future, or used concurrently in a multithreaded host,
+# it must switch to a per-thread loop or add reentrancy protection, otherwise "event loop is already running".
 _AGENT_LOOP = None
 
 
@@ -34,15 +38,17 @@ def _get_agent_loop():
     return _AGENT_LOOP
 
 
-# --- 单工具总时长看门狗 ------------------------------------------------------
-# 用 SIGALRM 在主线程上硬性限时：一个工具（序列构建 + 攻击判定）耗时超预算就抛出中断，
-# 放弃该工具、换下一个，避免某个工具把整批卡死。只在 Unix 主线程生效（容器内即是）；
-# 装不上就优雅退化为"无单工具超时"，不影响检测本身。
+# --- per-tool total-time watchdog ------------------------------------------------------
+# A hard time limit on the main thread via SIGALRM: when a tool (sequence construction + attack verdict)
+# exceeds its budget, raise an interrupt, abandon that tool and move to the next, so one tool does not stall
+# the whole batch. Only effective on a Unix main thread (which is the case inside the container); if it cannot
+# be installed it gracefully degrades to "no per-tool timeout", without affecting detection itself.
 
 
 class ToolBudgetExceeded(BaseException):
-    """单工具超预算中断。**刻意继承 BaseException**（而非 Exception）：这样 _build_plan_sync /
-    _attack_tool 里那些 `except Exception` 不会把它吞掉，能一路冒泡到工具循环层被专门处理。"""
+    """Per-tool budget-exceeded interrupt. **Deliberately subclasses BaseException** (not Exception): so the
+    `except Exception` blocks in _build_plan_sync / _attack_tool do not swallow it, and it can bubble all the
+    way up to the tool loop to be handled specially."""
 
 
 def _raise_tool_budget(signum, frame):
@@ -50,8 +56,8 @@ def _raise_tool_budget(signum, frame):
 
 
 def _arm_tool_alarm(seconds: float) -> bool:
-    """装一个 seconds 秒后触发的 SIGALRM 看门狗；返回是否真的装上了。
-    预算 <=0 / 非 Unix / 非主线程（signal.signal 会抛 ValueError）→ 返回 False，退化为无看门狗。"""
+    """Install a SIGALRM watchdog firing after `seconds`; return whether it was actually installed.
+    budget <=0 / non-Unix / non-main-thread (signal.signal raises ValueError) -> return False, degrading to no watchdog."""
     if not seconds or seconds <= 0 or not hasattr(signal, "setitimer"):
         return False
     try:
@@ -73,9 +79,10 @@ def _disarm_tool_alarm(armed: bool) -> None:
 
 
 def _reset_agent_loop_after_abort() -> None:
-    """工具超时被中断后调用。智能体常驻事件循环可能停在半截的 await 上（有悬挂任务/半开 socket）；
-    保守起见整只丢弃并重置绑在其上的 ChatOpenAI 单例，下一个工具用全新循环+客户端重建，
-    避免残留任务或 'Event loop is closed' 污染后续工具。只有真超时才付这点重建代价（极少发生）。"""
+    """Called after a tool timeout interrupt. The agent's persistent event loop may be stopped half-way on an
+    await (with a pending task / half-open socket); to be safe, discard it entirely and reset the ChatOpenAI
+    singleton bound to it, so the next tool rebuilds with a fresh loop + client, avoiding a residual task or
+    'Event loop is closed' polluting later tools. Only a real timeout pays this rebuild cost (very rare)."""
     global _AGENT_LOOP
     loop = _AGENT_LOOP
     _AGENT_LOOP = None
@@ -104,8 +111,8 @@ class _NullReporter:
 class Orchestrator:
     def __init__(self, url, headers, catalog, oracle, cache_dir: str | Path | None = None,
                 reporter=None, settings=None):
-        """reporter: cli.events.Reporter，不传则静默（内核仍可被当库调用）。
-        settings: config.Settings，带 llm_plan/poll_rounds/poll_interval/timeout/delay/max_payloads 等旋钮。
+        """reporter: cli.events.Reporter; if not given, silent (the core can still be used as a library).
+        settings: config.Settings, with knobs like llm_plan/poll_rounds/poll_interval/timeout/delay/max_payloads.
         """
         self.url = url
         self.headers = headers
@@ -114,14 +121,15 @@ class Orchestrator:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.synth = PayloadSynthesizer(oracle)
         self._tools_by_name = {t.name: t for t in catalog.tools}
-        self._reader = _find_reader(catalog)   # cross_tool canary 读回器（可能为 None）
+        self._reader = _find_reader(catalog)   # cross_tool canary read-back tool (may be None)
         self.reporter = reporter or _NullReporter()
         self.settings = settings
 
     def run(self, param_sinks, only_tools=None, dry_run: bool = False) -> list:
-        """param_sinks: sink.ParamSinkPrior 列表。only_tools: 限定工具名集合(调试用)。
-        dry_run: 只出计划、不发任何载荷（recon 用）。返回 Finding 列表。"""
-        # 保留所有非惰性、有启用类别的参数（不按单标签门控——floor 保证每类都会被测），按工具分组
+        """param_sinks: list of sink.ParamSinkPrior. only_tools: restrict to a set of tool names (for debugging).
+        dry_run: only produce plans, send no payloads (used by recon). Returns a list of Findings."""
+        # Keep every non-inert parameter that has an enabled class (no gating by single label — the floor
+        # guarantees every class is tested), grouped by tool
         by_tool: dict[str, list] = {}
         for ps in param_sinks:
             if only_tools and ps.tool not in only_tools:
@@ -146,19 +154,20 @@ class Orchestrator:
             if tool is None:
                 continue
             if dry_run:
-                # dry-run 只预览假设计划（不实跑、不走智能体），保持"未发送任何请求"的语义
+                # dry-run only previews the hypothesized plan (no real run, no agent), preserving the "no request was sent" semantics
                 p = planner.plan(tool, self.catalog, cache_dir=plan_cache) if use_llm_plan \
                     else planner.fallback_plan(tool)
                 self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
                                    steps=len(p.steps), reachable=p.reachable, note=p.note,
                                    param_count=len(sink_params))
                 continue
-            # 单工具总时长看门狗：序列构建+攻击判定合起来超预算就放弃本工具、记未测成、换下一个，
-            # 避免某个工具（最常见是智能体序列构建啃不动的依赖链）把整批卡死。
+            # Per-tool total-time watchdog: if sequence construction + attack verdict together exceed the budget,
+            # abandon this tool, record it as not-tested, and move on — so one tool (most often a dependency chain
+            # the agent's sequence construction cannot crack) does not stall the whole batch.
             t_tool = time.time()
             armed = _arm_tool_alarm(tool_budget)
             try:
-                # 序列构建在攻击会话之外完成（智能体自建 MCP 连接做发现），再开会话确定性回放
+                # Sequence construction happens outside the attack session (the agent builds its own MCP connection for discovery), then a session is opened for deterministic replay
                 plan = self._build_plan_sync(tool, use_agent, plan_cache, agent_cache)
                 self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
                                    steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
@@ -167,10 +176,12 @@ class Orchestrator:
             except ToolBudgetExceeded:
                 findings += self._on_tool_timeout(tool_name, idx, total, t_tool, tool_budget, sink_params)
             except BaseException as e:   # noqa: BLE001
-                # 看门狗中断若在 MCP/anyio 会话(async with open_session)里触发，anyio 清理子任务时会把它
-                # 包进 BaseExceptionGroup —— 裸 `except ToolBudgetExceeded` 接不住“装着它的盒子”，会漏到
-                # 进程层崩掉 runner。这里拆盒子：组里只要含看门狗中断就按“单工具超时”同样收尾、继续下一个；
-                # 不含（真·错误 / KeyboardInterrupt 等）则原样抛出，绝不吞。
+                # If the watchdog interrupt fires inside an MCP/anyio session (async with open_session), anyio
+                # wraps it into a BaseExceptionGroup while cleaning up child tasks — a bare `except ToolBudgetExceeded`
+                # cannot catch "the box containing it" and it would leak to the process level and crash the runner.
+                # Here we unwrap the box: if the group contains the watchdog interrupt, finish the same as a
+                # "per-tool timeout" and continue to the next; if not (a real error / KeyboardInterrupt etc.),
+                # re-raise as-is, never swallow.
                 budget_exc = None
                 if isinstance(e, BaseExceptionGroup):
                     budget_exc, _rest = e.split(ToolBudgetExceeded)
@@ -182,26 +193,30 @@ class Orchestrator:
         return findings
 
     def _on_tool_timeout(self, tool_name, idx, total, t_tool, tool_budget, sink_params) -> list:
-        """单工具超时的统一收尾：报事件、丢弃智能体残留事件循环、把该工具所有参数记 SKIPPED（未测成）。
-        看门狗中断无论是裸抛的 ToolBudgetExceeded，还是被 anyio 包成的 BaseExceptionGroup，都走这里。"""
+        """Unified finish for a per-tool timeout: emit the event, discard the agent's residual event loop, and
+        record all of the tool's parameters as SKIPPED (not tested). The watchdog interrupt comes here whether
+        it was a bare ToolBudgetExceeded or wrapped by anyio into a BaseExceptionGroup."""
         elapsed = time.time() - t_tool
-        note = f"单工具超时（预算 {int(tool_budget)}s，用时 {elapsed:.0f}s）已放弃，换下一个工具"
+        note = f"per-tool timeout (budget {int(tool_budget)}s, used {elapsed:.0f}s), abandoned, moving to the next tool"
         self.reporter.emit("attack.tool.timeout", tool=tool_name, index=idx, total=total,
                            seconds=round(elapsed, 1), budget=tool_budget)
-        _reset_agent_loop_after_abort()   # 智能体常驻循环可能停在半截，丢弃重建免污染后续工具
+        _reset_agent_loop_after_abort()   # the agent's persistent loop may be stopped half-way; discard and rebuild to avoid polluting later tools
         return [Finding(tool_name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
                 for ps in sink_params]
 
     def _build_plan_sync(self, tool, use_agent, plan_cache, agent_cache):
-        """序列构建。先判"是否需要前置"：用良性值直接试调一次目标工具——
-        **调通即为独立工具，用单步计划、不惊动智能体/一次性规划**；调不通才去建序列。
-        这是最可靠的通用判据（不静态猜依赖、不针对任何服务器），且顺带产出"需序列构建的工具占比"指标。
+        """Sequence construction. First decide "is a prerequisite needed": directly try calling the target tool
+        once with benign values —
+        **if it calls through, it is an independent tool, use a single-step plan and do not involve the agent /
+        one-shot planner**; only if it does not call through do we build a sequence.
+        This is the most reliable generic criterion (no static dependency guessing, not targeted at any server),
+        and it incidentally yields the "fraction of tools needing sequence construction" metric.
         """
         want_llm_plan = self.settings is None or self.settings.llm_plan
         if want_llm_plan:
             base_plan = planner.fallback_plan(tool)
             if self._direct_reachable(tool, base_plan):
-                base_plan.note = "直连可达（输入不依赖其它工具，无需序列构建）"
+                base_plan.note = "directly reachable (input does not depend on other tools, no sequence construction needed)"
                 self.reporter.emit("plan.direct", level="debug", tool=tool.name)
                 return base_plan
             self.reporter.emit("plan.needs_sequence", level="debug", tool=tool.name)
@@ -212,7 +227,7 @@ class Orchestrator:
                     self.url, self.headers, tool, self.catalog, self.settings,
                     self.reporter, cache_dir=agent_cache))
             except AllModelsUnavailable:
-                raise   # 所有模型都挂了：冒泡到批量层暂停，不再退而求其次
+                raise   # all models down: bubble up to the batch layer to pause, no further fallback
             except Exception as e:
                 self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
         if want_llm_plan:
@@ -220,10 +235,12 @@ class Orchestrator:
         return planner.fallback_plan(tool)
 
     def _direct_reachable(self, tool, base_plan) -> bool:
-        """用 base_plan 的 schema/良性实参直接调一次目标工具：非报错即独立可达（无需前置）。
+        """Call the target tool once directly with base_plan's schema/benign arguments: non-error means it is
+        independently reachable (no prerequisite needed).
 
-        用我方 driver 发一次良性调用（不含载荷）。驱动每次调用新建/关闭自己的连接、不跨事件循环
-        缓存，故这里用 asyncio.run 独立事件循环是安全的（与智能体那个"Event loop is closed"无关）。
+        Sends one benign call (no payload) via our own driver. The driver creates/closes its own connection per
+        call and does not cache across event loops, so using asyncio.run with an independent loop here is safe
+        (unrelated to the agent's "Event loop is closed").
         """
         last = base_plan.steps[-1]
         args = {k: v.get("value") for k, v in (last.args or {}).items() if isinstance(v, dict)}
@@ -231,7 +248,7 @@ class Orchestrator:
         try:
             res = asyncio.run(self._probe_call(tool.name, args, timeout))
         except Exception:
-            return False   # 连接/传输失败 → 保守地当作"需要进一步处理"，交给智能体
+            return False   # connection/transport failure -> conservatively treat as "needs further handling", hand to the agent
         return not res.get("is_error", True)
 
     async def _probe_call(self, tool_name, args, timeout):
@@ -239,36 +256,38 @@ class Orchestrator:
             return await call_on(session, tool_name, args)
 
     def _agent_run(self, coro):
-        """在**进程级常驻**事件循环上跑智能体协程（见模块顶部 _AGENT_LOOP 说明，根治 P7）。"""
+        """Run the agent coroutine on the **process-level persistent** event loop (see the _AGENT_LOOP note at the top of the module, fixes P7)."""
         loop = _get_agent_loop()
         asyncio.set_event_loop(loop)
         try:
             return loop.run_until_complete(coro)
         finally:
-            asyncio.set_event_loop(None)   # 交回干净状态，后续攻击阶段的 asyncio.run 不受影响
+            asyncio.set_event_loop(None)   # hand back a clean state, so the attack phase's asyncio.run is unaffected
 
     def close(self):
-        """每服务扫完调用。**不**关闭进程级常驻的智能体事件循环（跨服务共用一个，见模块顶部）——
-        此前每服务关闭该循环，正是 P7 "Event loop is closed" 的根因。循环随进程退出自动回收。"""
+        """Called after each server is scanned. Does **not** close the process-level persistent agent event loop
+        (shared across servers, see the top of the module) — closing it per server was exactly the root cause of
+        P7 "Event loop is closed". The loop is reclaimed automatically when the process exits."""
         return
 
     def _attack_tool(self, tool, plan, sink_params, timeout, poll_window, retries) -> list:
-        """回放给定计划并对每个参数多通道判定。每次尝试独立事件循环，隔离上一工具可能残留的
-        anyio/事件循环损坏状态。会话建立失败按 retries 重连；全部失败后做存活探测，如实标
-        SKIPPED（未测成），不冒充"未触达/无漏洞"。
+        """Replay the given plan and verdict each parameter over multiple channels. Each attempt uses an
+        independent event loop, isolating any anyio/event-loop corruption left over from the previous tool.
+        On session-establishment failure, reconnect per retries; after all fail, do a liveness probe and
+        honestly mark SKIPPED (not tested), not pretending "unreached / no vulnerability".
         """
         last_err = None
         for attempt in range(1, retries + 1):
             try:
                 return asyncio.run(self._attack_once(tool, plan, sink_params, timeout, poll_window))
-            except Exception as e:                      # 仅会话建立阶段才会抛到这里
+            except Exception as e:                      # only the session-establishment phase reaches here
                 last_err = e
                 if attempt < retries:
                     time.sleep(1.0 * attempt)
         alive = asyncio.run(_safe_ping(self.url, self.headers, timeout))
-        note = f"会话异常（重试 {retries} 次仍失败）：{str(last_err)[:120]}"
+        note = f"session error (still failing after {retries} retries): {str(last_err)[:120]}"
         if not alive:
-            note += "；且事后存活探测失败，服务器可能已崩溃/无响应（疑似 DoS 信号）"
+            note += "; and the post-hoc liveness probe failed, the server may have crashed/become unresponsive (suspected DoS signal)"
         self.reporter.emit("attack.tool.error", tool=tool.name, error=note)
         return [Finding(tool.name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
                 for ps in sink_params]
@@ -276,10 +295,12 @@ class Orchestrator:
     async def _attack_once(self, tool, plan, sink_params, timeout, poll_window) -> list:
         async with open_session(self.url, self.headers, timeout=timeout) as session:
             async def liveness():
-                # 存活心跳：优先复用当前会话(list_tools)，不新开并发会话。对 stdio 等无会话
-                # 隔离的后端，battery 会话还开着时并发第二个 initialize 会假失败，曾导致每个
-                # 工具都误报"崩溃"。仅当前会话不可用时才新开会话探服务器真实状态，真失败则
-                # 抛出(raise_on_fail)交由上层 recheck 记录原因，用以区分"服务器挂了"与"本地会话坏了"。
+                # Liveness heartbeat: prefer reusing the current session (list_tools), do not open a concurrent
+                # session. For a backend without session isolation (e.g. stdio), a concurrent second initialize
+                # while the battery session is still open fails spuriously, which once caused every tool to
+                # falsely report "crashed". Only open a new session to probe the server's real state when the
+                # current session is unusable, and on a real failure raise (raise_on_fail) so the upper-level
+                # recheck records the reason, distinguishing "the server died" from "the local session broke".
                 try:
                     await session.list_tools()
                     return True
@@ -292,8 +313,9 @@ class Orchestrator:
 
                 async def read_back(path, _rt=rtool, _rp=rpath, _ro=rother):
                     res = await call_on(session, _rt, {**_ro, _rp: path})
-                    # 读工具本身报错（如被围栏拒绝 "path escapes ALLOWED_ROOTS"）→ 视为“读不到”，
-                    # 返回空。只有真正成功读回的正文才算 canary 落地证据（fail-closed，不解析错误措辞）。
+                    # If the read tool itself errors (e.g. fenced off with "path escapes ALLOWED_ROOTS") -> treat
+                    # as "cannot read" and return empty. Only genuinely read-back content counts as canary-landing
+                    # evidence (fail-closed, does not parse rejection wording).
                     if res.get("is_error"):
                         return ""
                     return res.get("text", "")
@@ -320,10 +342,11 @@ _PATH_KEYS = ("path", "file", "filename", "filepath", "location")
 
 
 def _find_reader(catalog):
-    """在工具目录里找一个'给路径返回文件内容'的读工具，供 cross_tool canary 读回。
+    """Find a read tool in the catalog that "returns file content given a path", for cross_tool canary read-back.
 
-    启发式、通用、不针对任何服务器：工具名/描述含读取类词 + 有一个路径型字符串参数，
-    取必填参数最少者。返回 (tool_name, path_param, benign_other_required_args) 或 None。
+    Heuristic, generic, not targeted at any server: the tool name/description contains a read-type word + it has
+    one path-type string parameter; pick the one with the fewest required parameters. Returns
+    (tool_name, path_param, benign_other_required_args) or None.
     """
     best = None
     for t in catalog.tools:

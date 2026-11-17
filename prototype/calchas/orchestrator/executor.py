@@ -1,11 +1,14 @@
-"""判定引擎：在一个持久会话上建"发射台"，取基线，再对每个参数发全套探针并五态判定。
+"""Verdict engine: build the "launch pad" on a persistent session, take a baseline, then send the full probe
+battery per parameter and reach a five-state verdict.
 
-见 docs/判定引擎模块设计.md、docs/判定方法论.md。
-- 探针调度器：按 rank 发全套探针，CONFIRMED 后对该参数早停。
-- 多通道观测：inband（回显/签名，直接取证）/ oob（带外回连，批量 poll）/ timing（时延差，复测）/
-  differential（与基线响应差分）/ 错误指纹（被动弱证据）。
-- 触达判定：基线调用 + 任一非报错调用 → reached，用于区分"疑似无"与"未触达"。
-- 证据分级 → 五态：铁证/可证→确认有；仅弱证→疑似有；触达无命中→疑似无；未触达；未测成。
+See the verdict-engine design doc and the verdict-methodology doc.
+- Probe scheduler: send the full battery by rank, with early-stop for a parameter once CONFIRMED.
+- Multi-channel observation: inband (reflection/signature, direct evidence) / oob (out-of-band callback,
+  batch poll) / timing (delay difference, retested) / differential (diff against the baseline response) /
+  error fingerprint (passive weak evidence).
+- Reachability: baseline call + any non-error call -> reached, used to distinguish "likely clean" from "unreached".
+- Evidence grading -> five states: hard/provable evidence -> confirmed; weak only -> suspected; reached with
+  no hit -> likely clean; unreached; not tested.
 """
 from __future__ import annotations
 
@@ -20,13 +23,16 @@ from calchas.sink.types import AI, CODE, PT, SSRF, W_MED
 from .extract import extract_value
 from .types import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
 
-# 参数注入 --version/--help 差分的特征标记：只认"选项确实被 getopt/CLI 解析"的强信号——
-# usage/用法、getopt 选项报错、以及**带语境的版本横幅**（GNU/Copyright/"version X.Y.Z"/"vX.Y.Z"）。
-# 【关键】不再匹配裸小数 `\d+\.\d+`：它会把正常输出里的比率/大小/数值（如 "ratio": 1.444）误当版本号，
-# 造成大面积误报（token-optimizer 实测）。版本号必须是**三段**（显式 "version X.Y.Z" 语境，或带 `v` 前缀
-# 的 vX.Y.Z）才算——两段式 "Version 1.2" 多为正文里的散文/数据（如数据集描述 "…Version 1.2 structure…"），
-# 会把 --version 探针打到含该串的正常响应上误报（neg_ckan 实测）；真 CLI 版本横幅基本是三段(git 2.39.1)。
-# 仍不含 "invalid option"：应用层枚举校验也用这句（"Invalid option: expected one of ..."），会误报。
+# Signature markers for the argument-injection --version/--help differential: only accept strong signals that
+# "the option was genuinely parsed by getopt/CLI" — usage text, getopt option errors, and a **contextualized
+# version banner** (GNU/Copyright/"version X.Y.Z"/"vX.Y.Z").
+# [KEY] No longer matches a bare decimal `\d+\.\d+`: it would mistake ratios/sizes/numbers in normal output
+# (e.g. "ratio": 1.444) for a version number, causing widespread false positives (observed on token-optimizer).
+# A version number must be **three segments** (explicit "version X.Y.Z" context, or vX.Y.Z with a `v` prefix) —
+# a two-segment "Version 1.2" is mostly prose/data in the body (e.g. a dataset description "...Version 1.2
+# structure..."), which would fire the --version probe on a normal response containing that string (observed on
+# neg_ckan); a real CLI version banner is basically three segments (git 2.39.1).
+# Still excludes "invalid option": application-level enum validation also uses it ("Invalid option: expected one of ..."), which would misfire.
 _AI_MARKERS = re.compile(
     r"(?i)("
     r"usage:|unknown option|unrecognized option|option requires an argument|illegal option|"
@@ -34,19 +40,21 @@ _AI_MARKERS = re.compile(
     r"\bversion\s+v?\d+\.\d+\.\d+|\bv\d+\.\d+\.\d+\b"
     r")")
 
-# 发到后端程序之前就被 schema/协议级输入校验挡下 → 未触达 sink。这些是 MCP 框架 / JSON-Schema
-# 通用报错（zod / JSON-RPC -32602 等），与具体服务器无关——不枚举任何某个程序的报错原文。
+# Blocked by schema/protocol-level input validation before reaching the backend program -> the sink was not
+# reached. These are generic MCP-framework / JSON-Schema errors (zod / JSON-RPC -32602 etc.), independent of the
+# specific server — does not enumerate any single program's error wording.
 _VALIDATION_ERR = re.compile(r"(?i)(input validation error|invalid arguments for tool|"
                              r"expected (?:number|array|object|string|boolean|one of)|"
                              r"invalid input|invalid enum|required property|-32602)")
 
 
 def _reached_via_error(res: dict) -> bool:
-    """工具**业务层**返回了错误（有响应正文、非传输异常），且不是 schema/协议级输入校验错 →
-    载荷已抵达后端程序、只是被当非法参数拒了（已触达 sink）。通用判定，不含任何服务器特定词。
+    """The tool returned an error at the **business layer** (has a response body, not a transport exception) and
+    it is not a schema/protocol-level input-validation error -> the payload reached the backend program and was
+    merely rejected as an illegal argument (the sink was reached). Generic judgement, no server-specific words.
     """
     text = res.get("text") or ""
-    if not text or res.get("exc"):      # 传输异常 / 无响应 → 没触达
+    if not text or res.get("exc"):      # transport exception / no response -> not reached
         return False
     return not _VALIDATION_ERR.search(text)
 
@@ -57,7 +65,7 @@ class _NullReporter:
 
 
 async def _resolve_args(arg_specs: dict, step_responses: dict) -> tuple[dict, list]:
-    """把 {param: ArgSpec} 解析成具体实参。返回 (args, 未解析的参数名列表)。"""
+    """Resolve {param: ArgSpec} into concrete arguments. Returns (args, list of unresolved parameter names)."""
     args, missing = {}, []
     for param, spec in arg_specs.items():
         if not isinstance(spec, dict):
@@ -76,27 +84,27 @@ async def _resolve_args(arg_specs: dict, step_responses: dict) -> tuple[dict, li
 
 async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=(3, 2.0),
                    reporter=None, settings=None, liveness=None, read_back=None) -> list:
-    """plan.steps[-1] 为目标工具。sink_params: 该工具待测的 ParamSinkPrior 列表。返回 Finding 列表。
+    """plan.steps[-1] is the target tool. sink_params: the list of ParamSinkPrior to test for this tool. Returns a list of Findings.
 
-    liveness: 可选 async 存活探测（无参返回 bool），用于崩溃/DoS 观测。
-    read_back: 可选 async(path)->text 读回器（配套读文件工具），用于 cross_tool canary 判定。
+    liveness: optional async liveness probe (no args, returns bool), for crash/DoS observation.
+    read_back: optional async(path)->text read-back (paired read-file tool), for cross_tool canary verdicts.
     """
     reporter = reporter or _NullReporter()
     target = plan.steps[-1].tool
-    seq_trace = []   # 可复现：前置调用记录
+    seq_trace = []   # reproducibility: record of prerequisite calls
 
     if not plan.reachable:
-        return _skipped_all(target, sink_params, plan.note or "计划判定目标不可达", reporter)
+        return _skipped_all(target, sink_params, plan.note or "plan judged the target unreachable", reporter)
 
-    # 1) 建立发射台：尽力执行前置步骤。一步失败不整体放弃——前置多是"保证资源存在"这类铺垫。
+    # 1) Build the launch pad: execute prerequisite steps best-effort. One step failing does not abandon the whole thing — prerequisites are mostly "ensure a resource exists" groundwork.
     step_responses = {}
     launchpad_errors = []
     for st in plan.steps[:-1]:
         args, missing = await _resolve_args(st.args, step_responses)
         if missing:
-            launchpad_errors.append(f"步骤{st.step}({st.tool})参数{missing}未能取值")
+            launchpad_errors.append(f"step {st.step} ({st.tool}) parameters {missing} could not be resolved")
             reporter.emit("launchpad.step", level="debug", tool=st.tool, step=st.step,
-                          skipped=True, missing=missing, reason="依赖的前置产出缺席，跳过此步")
+                          skipped=True, missing=missing, reason="a depended-on prerequisite output is absent, skipping this step")
             continue
         res = await _safe_call(session, st.tool, args)
         step_responses[st.step] = res["text"]
@@ -105,26 +113,26 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
                       args=res.get("args_sent", args), is_error=res["is_error"],
                       response=res.get("text", ""), error=res.get("exc"))
         if res["is_error"]:
-            launchpad_errors.append(f"步骤{st.step}({st.tool})调用报错")
+            launchpad_errors.append(f"step {st.step} ({st.tool}) call errored")
     if launchpad_errors:
-        reporter.emit("launchpad.warn", tool=target, reason="；".join(launchpad_errors))
+        reporter.emit("launchpad.warn", tool=target, reason="; ".join(launchpad_errors))
 
-    # 2) 目标工具的发射台实参（最后一步）：只有真的取不到值才判 SKIPPED
+    # 2) The target tool's launch-pad arguments (the last step): only judge SKIPPED if a value truly cannot be resolved
     base_args, missing = await _resolve_args(plan.steps[-1].args, step_responses)
     if missing:
-        extra = f"（前置: {'；'.join(launchpad_errors)}）" if launchpad_errors else ""
-        note = f"目标工具参数 {missing} 未能取值{extra}"
+        extra = f" (prerequisites: {'; '.join(launchpad_errors)})" if launchpad_errors else ""
+        note = f"target tool parameters {missing} could not be resolved{extra}"
         reporter.emit("launchpad.fail", tool=target, reason=note)
         return _skipped_all(target, sink_params, note, reporter)
 
-    # 3) 基线：用全良性实参调一次目标工具，取响应/时延/是否可达（供差分、时延、触达判定复用）
+    # 3) Baseline: call the target tool once with all-benign arguments, capturing response/latency/reachability (reused for differential, timing, reachability)
     base_res, base_latency = await _timed_call(session, target, base_args)
     baseline_text = base_res["text"] or ""
     baseline_ok = not base_res["is_error"]
     reporter.emit("launchpad.ready", level="debug", tool=target, base_args=base_args,
                   baseline_ok=baseline_ok, baseline_latency=round(base_latency, 3))
 
-    # 4) 对每个参数：发全套探针 + 多通道判定 + 五态
+    # 4) For each parameter: send the full battery + multi-channel verdict + five states
     findings = []
     for i, ps in enumerate(sink_params):
         try:
@@ -132,48 +140,50 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
                                     seq_trace, poll_window, reporter, settings,
                                     baseline_text, base_latency, read_back)
         except (Exception, asyncio.CancelledError) as e:
-            note = f"连接异常中止（可能是网络抖动打断了正在进行的调用）：{str(e)[:150]}"
-            # 存活探测去抖：区分"服务器被打挂(DoS)"与"网络抖动/本地会话损坏"
+            note = f"connection aborted mid-flight (a network blip may have interrupted an in-progress call): {str(e)[:150]}"
+            # Liveness-probe debounce: distinguish "the server was beaten down (DoS)" from "a network blip / broken local session"
             crashed = False
             if liveness is not None:
                 alive, detail = await _liveness_recheck(liveness)
                 if not alive:
                     crashed = True
-                    note += f"；事后连续存活探测失败，服务器可能已崩溃/无响应（疑似 DoS）；最后原因：{detail}"
+                    note += f"; subsequent consecutive liveness probes failed, the server may have crashed/become unresponsive (suspected DoS); last reason: {detail}"
                     reporter.emit("server.crash", tool=target, note=note)
             reporter.emit("attack.tool.error", tool=target, error=note)
             for ps2 in sink_params[i:]:
                 f2 = Finding(target, ps2.param_path, _repr_class(ps2), SKIPPED, note=note)
                 findings.append(f2)
                 _emit_finding(reporter, f2)
-            if crashed:   # 崩溃落成一条可用性发现，进 findings.json / 报告
-                findings.append(Finding(target, "(存活探测)", DOS, SUSPECTED, note=note))
+            if crashed:   # the crash becomes one availability finding, entering findings.json / the report
+                findings.append(Finding(target, "(liveness probe)", DOS, SUSPECTED, note=note))
             return findings
-        for one in f:   # _attack_param 现在返回"每类一条"的列表（类别级早停，一个参数可多类确认）
+        for one in f:   # _attack_param now returns a list of "one per class" (class-level early-stop, one parameter can confirm several classes)
             findings.append(one)
             _emit_finding(reporter, one)
 
-    # 整套打完后存活探测（DoS 观测）：有载荷会把服务器打到无响应，即便单次调用只表现为报错。
-    # K 次复测去抖，真失败才判崩溃，并落成一条可用性发现进 findings（从而进 findings.json/报告）。
+    # Liveness probe after the full battery (DoS observation): payloads can beat the server to unresponsiveness,
+    # even if a single call only manifested as an error. Debounced over K retests; only a real failure is judged
+    # a crash, landing as one availability finding in findings (and thus findings.json / the report).
     if liveness is not None:
         alive, detail = await _liveness_recheck(liveness)
         if not alive:
-            note = f"整套测试后连续存活探测失败，服务器可能已崩溃/无响应（疑似 DoS）；最后原因：{detail}"
+            note = f"consecutive liveness probes failed after the full battery, the server may have crashed/become unresponsive (suspected DoS); last reason: {detail}"
             reporter.emit("server.crash", tool=target, note=note)
-            findings.append(Finding(target, "(存活探测)", DOS, SUSPECTED, note=note))
+            findings.append(Finding(target, "(liveness probe)", DOS, SUSPECTED, note=note))
     return findings
 
 
 async def _liveness_recheck(liveness, rounds: int = 3, interval: float = 1.0):
-    """崩溃判定去抖（docs/判定方法论.md：崩溃需 K 次重复，抵消网络抖动）：连续 rounds 次
-    心跳都失败才判崩溃；任一次成功即判存活。返回 (alive, detail)，detail 为最后一次失败原因
-    （真实异常，不吞——真 DoS 与误报据此区分）。"""
+    """Crash-judgement debounce (verdict-methodology doc: a crash needs K repeats, to offset network blips):
+    only judge a crash if `rounds` consecutive heartbeats all fail; any single success judges it alive. Returns
+    (alive, detail), where detail is the last failure reason (the real exception, not swallowed — this is how a
+    real DoS is distinguished from a false positive)."""
     detail = ""
     for i in range(rounds):
         try:
             if await liveness():
                 return True, ""
-            detail = detail or "心跳返回否定"
+            detail = detail or "heartbeat returned negative"
         except Exception as e:
             detail = f"{type(e).__name__}: {str(e)[:150]}"
         if i < rounds - 1:
@@ -182,14 +192,16 @@ async def _liveness_recheck(liveness, rounds: int = 3, interval: float = 1.0):
 
 
 def _shaped_args(base_args, prior, value, placement="value"):
-    """按参数声明的约束/结构摆放载荷，避免被后端程序之前的输入校验直接挡下。返回参数字典；
-    若该参数被声明约束锁死、这条载荷无法构造成合法骨架 → 返回 **None**（上层跳过该载荷）。
+    """Place the payload according to the parameter's declared constraints/structure, to avoid being blocked by
+    input validation before the backend program. Returns the argument dict; if the parameter is locked down by a
+    declared constraint and this payload cannot be built into a valid skeleton -> returns **None** (the caller
+    skips this payload).
 
-    - **带格式约束的字符串**（pattern/format/minLength）：走约束感知的"合法骨架+注入"
-      （valuegen.inject_value）——如 `^proj-` → `proj-<载荷>`；uuid/锚死 pattern → None（如实无法注入）。
-    - array → [value]；object → {<key>: value}（载荷作值）。
-    - 其余标量（**含数字**）保持原样：数字仍以原值探测，保住"宽松校验服务端"的命中（如 omni maxCount）。
-    见 docs/参数值生成优化方案.md。"""
+    - **A format-constrained string** (pattern/format/minLength): use constraint-aware "valid skeleton +
+      injection" (valuegen.inject_value) — e.g. `^proj-` -> `proj-<payload>`; uuid / anchored pattern -> None (honestly cannot inject).
+    - array -> [value]; object -> {<key>: value} (payload as the value).
+    - Other scalars (**including numbers**) kept as-is: a number is still probed with its own value, preserving a hit on a "loosely validating server" (e.g. omni maxCount).
+    See the value-generation design doc."""
     t = getattr(prior, "param_type", None)
     param = getattr(prior, "param", None)
     if (param is not None and t in ("string", "union", "unknown")
@@ -202,10 +214,10 @@ def _shaped_args(base_args, prior, value, placement="value"):
     if t == "array":
         v = [value]
         n = (getattr(param, "min_items", None) or 0) if param else 0
-        while len(v) < n:                       # 补足 minItems（P3：minItems≥2 的数组）
+        while len(v) < n:                       # pad to minItems (P3: arrays with minItems>=2)
             v.append("x")
     elif t == "object":
-        # P3：object 既测 value 位 {键:载荷}，也测 key 位 {载荷:值}（env 变量名/HTTP 头名型 sink）
+        # P3: for an object, test both the value position {key: payload} and the key position {payload: value} (env-var-name / HTTP-header-name sinks)
         v = {value: MARKER} if placement == "key" else {MARKER: value}
     else:
         v = value
@@ -213,22 +225,24 @@ def _shaped_args(base_args, prior, value, placement="value"):
 
 
 def _blamed_param(err: str) -> str | None:
-    """从**输入校验类**报错里解析它点名的参数（如 'expected number, received string at maxResults'、
-    'Invalid UUID at investigationId'、'Invalid input: - appName: ...'），用于区分"目标参数本身被拒"
-    与"某兄弟参数填充值不合法把整个调用挡下"。通用解析，不针对任何服务。
+    """Parse the parameter an **input-validation** error names (e.g. 'expected number, received string at
+    maxResults', 'Invalid UUID at investigationId', 'Invalid input: - appName: ...'), to distinguish "the target
+    parameter itself was rejected" from "a sibling parameter's fill value was invalid and blocked the whole
+    call". Generic parsing, not targeted at any server.
 
-    保守起见只在确为输入校验错误时解析，且 'at <参数>' 只认**位于消息末尾**的那个（zod/MCP 校验
-    把出错字段路径放在末尾）——避免把 'at least'/'at runtime' 这类普通英文误当参数名。"""
+    To be safe, only parse when it is genuinely an input-validation error, and 'at <param>' only accepts the one
+    **at the end of the message** (zod/MCP validation puts the erroring field path at the end) — to avoid
+    mistaking 'at least'/'at runtime' and other plain English for a parameter name."""
     if not re.search(
         r"Invalid (?:arguments|input|option|UUID|string|email|enum)|expected .+? received"
         r"|Too (?:small|big)|-32602", err, re.I):
         return None
     s = err.strip()
-    # zod/MCP 风格：出错字段路径在末尾 "... at <path>"（可能后跟 error=None 之类噪音）
+    # zod/MCP style: the erroring field path is at the end "... at <path>" (possibly followed by noise like error=None)
     m = re.search(r"\bat\s+([A-Za-z_][\w.]*(?:\[\d+\])?[\w.]*)\s*(?:error=\S+\s*)?$", s)
     if m:
         return m.group(1).split("[")[0].split(".")[0]
-    # nest/zod 列表风格："- <field>: <message>"（已在上面确认是校验错误的前提下）
+    # nest/zod list style: "- <field>: <message>" (given it was already confirmed above to be a validation error)
     m = re.search(r"[-•]\s*([A-Za-z_]\w*)\s*:\s*\S", s)
     if m:
         return m.group(1)
@@ -236,9 +250,11 @@ def _blamed_param(err: str) -> str | None:
 
 
 def _is_type_enforced(err: str, param_path) -> bool:
-    """报错是否表明【目标参数本身】被服务端强制为数值/布尔类型（收到字符串被拒）。
-    用于 P5：数字参数先探 1 条，若类型被强制 → 字符串注入进不去，提前停、省掉剩余探针；
-    若服务端反而收下了字符串（宽松校验，如 omni git_log.maxCount）→ 不触发，继续打全套（保召回）。"""
+    """Whether the error indicates that [the target parameter itself] is enforced by the server to be a
+    numeric/boolean type (a string was rejected). Used for P5: probe a numeric parameter with 1 payload first,
+    and if the type is enforced -> string injection cannot get in, stop early and save the remaining probes; if
+    the server instead accepted the string (loose validation, e.g. omni git_log.maxCount) -> do not trigger,
+    continue with the full battery (to preserve recall)."""
     if not err:
         return False
     if not re.search(r"expected (number|integer|bigint|boolean)", err, re.I):
@@ -274,7 +290,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                         read_back=None):
     probes = synthesizer.synthesize(prior)
     if getattr(prior, "param_type", None) == "object":
-        # P3：object 参数对每条载荷同时测 value 位与 key 位（交错，使截断后两位置都保留）
+        # P3: for an object parameter, test both the value position and key position for each payload (interleaved, so both positions survive truncation)
         from dataclasses import replace
         probes = [x for p in probes for x in (p, replace(p, placement="key"))]
     repr_cls = _repr_class(prior)
@@ -283,24 +299,25 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     if max_payloads:
         probes = probes[:max_payloads]
     if not probes:
-        return [Finding(target, param, repr_cls, LIKELY_CLEAN, note="无可用载荷（参数惰性/无启用类别）")]
+        return [Finding(target, param, repr_cls, LIKELY_CLEAN, note="no usable payload (parameter inert / no enabled class)")]
 
     reporter.emit("attack.param.start", tool=target, param=param, sink=repr_cls, payload_count=len(probes))
     delay = getattr(settings, "delay", 0.0) if settings else 0.0
 
     oob_pending = []      # [(probe_spec, args)]
-    weak = []             # [(vuln_class, probe_spec, evidence)] 弱证据 → 疑似有
-    ssrf_blind = []       # 盲 SSRF 候选：内网目标成功取回(is_error=False)但正文无元数据签名；
-                          # 待带外回连证实本参数确是 fetch sink 后，升级为疑似盲 SSRF（见 oob poll）
+    weak = []             # [(vuln_class, probe_spec, evidence)] weak evidence -> suspected
+    ssrf_blind = []       # blind-SSRF candidates: an internal target fetched successfully (is_error=False) but
+                          # the body has no metadata signature; promoted to suspected blind SSRF once an OOB
+                          # callback confirms this parameter is truly a fetch sink (see oob poll)
     saw_ok = False
-    saw_program_error = False   # 载荷抵达后端程序、被当非法参数拒（已触达，用于区分"疑似无 vs 未触达"）
-    sent_any = False      # 是否真的发出过载荷（全被"锁死约束"跳过时为 False）
-    type_locked = False   # P5：数字参数被服务端强制类型校验 → 提前停
+    saw_program_error = False   # a payload reached the backend program and was rejected as an illegal argument (reached, used to distinguish "likely clean vs unreached")
+    sent_any = False      # whether any payload was actually sent (False when all are skipped by a "locked-down constraint")
+    type_locked = False   # P5: the server enforces the type of a numeric parameter -> stop early
     numeric = getattr(prior, "param_type", None) in ("number", "integer")
     last_err = ""
-    confirmed_classes: set = set()   # 已确认的漏洞类 → 类内早停（不再发该类其余载荷），别的类继续测
-    confirmed_findings: list = []    # 每个确认的类别各记一条（一个参数可同时命中多类）
-    pt_probe = None                  # 捕获一条 PT 探针 → 循环后做"路径接受自校准差分"疑似判定
+    confirmed_classes: set = set()   # already-confirmed vuln classes -> intra-class early-stop (stop sending that class's remaining payloads), other classes continue
+    confirmed_findings: list = []    # one record per confirmed class (a parameter can hit several classes at once)
+    pt_probe = None                  # capture one PT probe -> after the loop, do the "path-acceptance self-calibrating differential" suspected judgement
 
     def _mark(cls, finding):
         confirmed_findings.append(finding)
@@ -308,12 +325,12 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
 
     for p in probes:
         if p.vuln_class == PT and pt_probe is None:
-            pt_probe = p             # 记下本参数确有 PT 候选（sink 推断给了 PT 权重）
+            pt_probe = p             # note that this parameter does have a PT candidate (sink inference gave PT weight)
         if p.vuln_class in confirmed_classes:
-            continue   # 该类已确认 → 类内早停：跳过其余该类载荷；不影响其它类继续测
+            continue   # this class is already confirmed -> intra-class early-stop: skip its remaining payloads; other classes continue
         args = _shaped_args(base_args, prior, p.value, getattr(p, "placement", "value"))
         if args is None:
-            continue   # 参数被声明约束锁死（uuid/锚死 pattern 等），这条载荷无法构造成合法骨架 → 跳过
+            continue   # the parameter is locked down by a declared constraint (uuid / anchored pattern etc.), this payload cannot be built into a valid skeleton -> skip
         sent_any = True
         res, latency = await _timed_call(session, target, args)
         text = res["text"] or ""
@@ -328,21 +345,23 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             if _reached_via_error(res):
                 saw_program_error = True
             if numeric and _is_type_enforced(err_text, param):
-                # 服务端强制数值类型、字符串被拒 → 字符串注入进不去，省掉剩余探针（宽松校验的服务端不会命中此分支）
+                # The server enforces the numeric type and the string was rejected -> string injection cannot get in, save the remaining probes (a loosely-validating server does not hit this branch)
                 type_locked = True
                 break
         else:
             saw_ok = True
 
-        # 被动：错误指纹（弱证据），对响应与报错正文都看。
-        # SSRF 例外：连接/解析失败指纹（ECONNREFUSED/getaddrinfo/Name or service not known…）
-        # 只在**内网/元数据目标**上才算 SSRF 证据——它证明服务端"试图越过信任边界去连内网"。
-        # 打公网目标连不通不是漏洞（本职功能的正常失败），不计。
+        # Passive: error fingerprint (weak evidence), inspected on both the response and the error body.
+        # SSRF exception: a connection/resolution-failure fingerprint (ECONNREFUSED/getaddrinfo/Name or service
+        # not known...) only counts as SSRF evidence on an **internal/metadata target** — it proves the server
+        # "tried to cross the trust boundary to reach the intranet". Failing to connect to a public target is not
+        # a vulnerability (a normal failure of the intended function), not counted.
         fp = oracle.fingerprint(text, p.vuln_class)
         if not fp and res["is_error"] and p.vuln_class == SSRF:
-            # 连接失败/超时常以传输异常形式落在 exc（而非正文 text）→ 对 SSRF 兜底再扫一次错误通道，
-            # 免得"服务端确已越界去连内网、但连不通"的正面证据因只扫 text 而漏掉。仅 SSRF、仅内网目标
-            # 据此计证（见下方 target_scope 闸门），不影响其它类。
+            # A connection failure/timeout often lands in exc as a transport exception (not the body text) -> for
+            # SSRF, scan the error channel once more as a fallback, so positive evidence of "the server did cross
+            # the boundary to reach the intranet but could not connect" is not missed by scanning only text. Only
+            # SSRF, only internal targets count this (see the target_scope gate below), not affecting other classes.
             fp = oracle.fingerprint(res.get("exc") or "", p.vuln_class)
         if fp and not (p.vuln_class == SSRF and getattr(p, "target_scope", "public") != "internal"):
             weak.append((p.vuln_class, p, {"type": "error_fingerprint", "channel": "inband",
@@ -351,31 +370,40 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
         if p.channel == "inband":
             hit = oracle.observe_inband(p.probe, text)
             if hit:
-                # 通用反射感知：命中的签名若本就是载荷子串 → 疑似"输入被原样回显"，非执行/解析。
-                # 签名不在载荷里（求值回显 token1681 / 文件特征 root:x:0:0 / 元数据 ami-id）→ 铁证确认；
-                # 在载荷里（AI 未知选项、SSRF 把元数据路径词回显）→ 须有对应错误指纹佐证才确认，
-                # 否则不算证据（纯回显几乎每个工具都有，计入可达、趋向"疑似无"，不再堆"疑似有"）。
+                # Generic reflection awareness: if the matched signature is itself a substring of the payload ->
+                # suspected "input echoed verbatim", not execution/parsing. A signature not in the payload
+                # (eval-echo token1681 / file signature root:x:0:0 / metadata ami-id) -> hard confirmation; one
+                # in the payload (AI unknown option, SSRF echoing a metadata path word) -> requires a
+                # corresponding error fingerprint to corroborate before confirming, otherwise it is not evidence
+                # (pure echo exists on almost every tool, counts toward reachability, trends to "likely clean",
+                # not piling up "suspected").
                 marker = (hit.evidence or {}).get("marker", "")
                 reflected = bool(marker) and marker in p.value
                 if not reflected:
-                    # 任何求值回显（服务端算出我未发出的计算结果）即确认代码注入（CWE-94，执行确认）。
-                    # 不特判"算术 vs 代码"：对 CODE 用 tier 标危害程度（L2=越域 RCE 级 / L1=算术），
-                    # 但 tier 不作确认闸门（口径 ①）；declared_domain 仅作人工复核附注。
+                    # Any eval-echo (the server computed a result I never sent) confirms code injection (CWE-94,
+                    # execution-confirmed). No special-casing of "arithmetic vs code": for CODE, label the impact
+                    # with tier (L2=out-of-domain RCE-level / L1=arithmetic), but tier is not a confirmation gate
+                    # (policy ①); declared_domain is a manual-review annotation only.
                     ev = _code_ev(prior, p, hit.evidence) if p.vuln_class == CODE else hit.evidence
                     _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "inband"))
                     continue
                 if oracle.fingerprint(text, p.vuln_class):
                     _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "inband"))
                     continue
-            # SSRF 信任边界：只认与"发起 fetch"有因果关系的证据——
-            #   · 正文命中云元数据特征串（ami-id/instance-id 等）→ 走上面 observe_inband 的 confirmed；
-            #   · 对内网目标出现连接失败指纹（ECONNREFUSED/超时/getaddrinfo 等）→ 由上面的 error_fingerprint
-            #     归入 weak（疑似），证明服务端确实去连了内网。
-            # 不再用"返回了非空正文"反推"够到了内网"：返回的正文是工具的正常业务输出，与有无 fetch
-            # 无因果（该参数常根本不发请求、服务端照常返回结果或业务报错），此推理不成立，故移除。
-            # 盲 SSRF 候选：内网/元数据目标成功取回(is_error==False)、正文无元数据签名、也无连接失败指纹。
-            # 单看无法区分"真取到内网"与"该参数根本不发请求、照常返回业务结果"→ 暂记候选；待下方带外回连
-            # 证实本参数确会外发请求(fetch sink)后再升级为疑似盲 SSRF（OOB 命中排除了"根本不发请求"的误报）。
+            # SSRF trust boundary: only accept evidence causally linked to "initiating a fetch" —
+            #   - a cloud-metadata signature in the body (ami-id/instance-id etc.) -> confirmed via observe_inband above;
+            #   - a connection-failure fingerprint on an internal target (ECONNREFUSED/timeout/getaddrinfo etc.)
+            #     -> classified into weak (suspected) by the error_fingerprint above, proving the server did try to reach the intranet.
+            # No longer infers "reached the intranet" from "returned a non-empty body": the returned body is the
+            # tool's normal business output, with no causal link to whether a fetch happened (this parameter
+            # often does not make a request at all, and the server returns a result or a business error as usual),
+            # so that inference does not hold and is removed.
+            # Blind-SSRF candidate: an internal/metadata target fetched successfully (is_error==False), no
+            # metadata signature in the body, and no connection-failure fingerprint. On its own this cannot
+            # distinguish "truly reached the intranet" from "this parameter makes no request and returns the
+            # business result as usual" -> record as a candidate for now; promote to suspected blind SSRF once the
+            # OOB callback below confirms this parameter does make an outbound request (a fetch sink) (an OOB hit
+            # rules out the "makes no request at all" false positive).
             if (p.vuln_class == SSRF and getattr(p, "target_scope", "public") == "internal"
                     and not res["is_error"] and not fp):
                 ssrf_blind.append((p, args, text))
@@ -392,37 +420,39 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "differential"))
                 continue
         elif p.channel == "cross_tool":
-            # 写 canary 的载荷已在上面发出；若有配套读工具，读回 /tmp/{token} 并匹配
+            # The canary-writing payload was already sent above; if there is a paired read tool, read back /tmp/{token} and match
             if read_back is not None:
                 canary_path = "/tmp/" + p.probe.token
                 try:
                     back = await read_back(canary_path)
                 except Exception:
                     back = ""
-                # 必须读回"求值 canary"（echo {TOKEN}$((41*41)) 的产物 {TOKEN}1681），一并证明：
-                #   ① 文件真落地（读回含我们写入的内容）；② $((41*41)) 被 shell 求值=命令真执行。
-                # 仅 token 命中不算——读器常把 canary_path 原样回显在"文件不存在/已缓存/报错"信息里
-                # （marker 只出现在路径串中，文件并未写入），那是通用误报。与 inband 的 {TOKEN}1681
-                # 口径统一（通用判据，不针对任何服务器）。
+                # Must read back the "eval canary" (the product {TOKEN}1681 of echo {TOKEN}$((41*41))), proving
+                # both: (1) the file truly landed (the read-back contains what we wrote); (2) $((41*41)) was
+                # evaluated by the shell = the command truly executed. A token-only match does not count — a
+                # reader often echoes canary_path verbatim in a "file not found / already cached / error" message
+                # (the marker appears only in the path string, the file was not written), which is a generic false
+                # positive. Consistent with the inband {TOKEN}1681 criterion (generic, not targeted at any server).
                 expect = p.probe.expect or []
                 if back and expect and any(e in back for e in expect):
                     ev = {"type": "cross_tool", "reader_path": canary_path, "snippet": back[:160]}
                     _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, ev, seq_trace, args, "cross_tool"))
                     continue
-            # 无配套读工具或未读到求值 canary → 不计入，继续
+            # No paired read tool or the eval canary was not read back -> not counted, continue
         elif p.channel == "path_confine":
-            # fail-closed 写型路径穿越：用该 MCP 自己的读回器做"目标路径 vs 未写入对照路径"自对照差分。
-            # 读两条同形路径——我们刚写入的越界落地路径 landing，与一条从未写过的对照路径 control。
-            #   · 真写进去了：读 landing 得文件正文、读 control 得"不存在"（或读失败）→ 两者不同 → 确认。
-            #   · 什么都没写（读型工具/被围栏拦）：两者都是"不存在"模板 → 去掉回显的路径串后一致 → 不确认。
-            # 只认"两条路径读回结果不同"这一正向差分，不检非空、不解析任何拒绝措辞（避免把"文件不存在"
-            # 提示误当成写入成功）。
+            # fail-closed write-type path traversal: use this MCP's own read-back tool for a "target path vs
+            # never-written control path" self-differential. Read two isomorphic paths — the out-of-bounds landing
+            # path we just wrote, and a control path that was never written.
+            #   - truly written: reading landing yields the file body, reading control yields "not found" (or a read failure) -> the two differ -> confirmed.
+            #   - nothing written (a read-type tool / blocked by a fence): both are a "not found" template -> identical after stripping the echoed path strings -> not confirmed.
+            # Only accept the positive differential "the two paths read back differently"; do not check non-empty,
+            # do not parse any rejection wording (to avoid mistaking a "file not found" message for a successful write).
             tok = getattr(p.probe, "token", None) if p.probe else None
             if read_back is not None and tok:
                 ext = ".txt" if p.value.endswith(".txt") else ""
                 landing = "/tmp/" + tok + ext
-                control = "/tmp/" + tok + "_ctl" + ext     # 同形但从未写入的对照路径
-                control2 = "/tmp/" + tok + "_ctl2" + ext   # 第二条从未写入的对照路径，用于读器保真自校验
+                control = "/tmp/" + tok + "_ctl" + ext     # isomorphic but never-written control path
+                control2 = "/tmp/" + tok + "_ctl2" + ext   # a second never-written control path, for the reader-fidelity self-check
 
                 async def _rb(path):
                     try:
@@ -434,15 +464,17 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 s_land = _norm_pt_readback(back, allp)
                 s_ctl = _norm_pt_readback(back_ctl, allp)
                 s_ctl2 = _norm_pt_readback(back_ctl2, allp)
-                # 读器保真自校验：两条【从未写入】的对照路径必须读回一致。若不一致，说明读器输出
-                # 依赖路径本身 / 非确定（mock 或"比较型"工具），其"landing≠control"差分并不代表文件
-                # 真落地 → 不可信，弃用本通道（通用判据，不针对任何服务器）。真写入场景（如 git
-                # clone/init 建目录）读器保真、对未写入路径一致读回"不存在"，照常确认、不受影响。
+                # Reader-fidelity self-check: the two [never-written] control paths must read back identically. If
+                # they differ, the reader's output depends on the path itself / is non-deterministic (a mock or a
+                # "comparison-type" tool), so its "landing != control" differential does not mean the file truly
+                # landed -> untrustworthy, abandon this channel (generic, not targeted at any server). A true-write
+                # scenario (e.g. git clone/init creating a directory) has a faithful reader that reads "not found"
+                # identically for never-written paths, confirming as usual, unaffected.
                 reader_faithful = (s_ctl == s_ctl2)
                 if back and reader_faithful and s_land != s_ctl:
                     ev = {"type": "path_traversal_write", "channel": "cross_tool",
                           "landing": landing, "control": control, "snippet": back[:160],
-                          "note": "越界写入路径读回内容与未写入对照路径不同，且读器对未写入路径读回一致（保真），canary 真实落地"}
+                          "note": "the out-of-bounds write path reads back different content than the never-written control path, and the reader reads never-written paths identically (faithful), so the canary truly landed"}
                     _mark(PT, _confirmed(target, param, PT, p, ev, seq_trace, args, "cross_tool"))
                     continue
         elif p.channel == "oob":
@@ -450,7 +482,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
         if delay:
             await asyncio.sleep(delay)
 
-    # 批量 poll 带外回连
+    # Batch-poll out-of-band callbacks
     if oob_pending:
         hits = oracle.poll([p.probe for p, _ in oob_pending], rounds=poll_window[0], interval=poll_window[1])
         for p, args in oob_pending:
@@ -458,39 +490,47 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             if not hit:
                 continue
             if p.vuln_class in confirmed_classes:
-                continue   # 该类已在循环中确认 → 类内早停，不重复记
+                continue   # this class was already confirmed in the loop -> intra-class early-stop, do not re-record
             if p.vuln_class == SSRF:
-                # 信任边界：SSRF 的带外回连打的是我们的**公网** collector（target_scope=public）。
-                # 服务端能对外发请求=可达性（本职功能），单独**不**构成 SSRF 漏洞结论。但它证实了一件
-                # 关键的事：本参数确会让服务端**外发请求**（是真 fetch sink，非 inert 参数）。
+                # Trust boundary: SSRF's out-of-band callback hits our **public** collector (target_scope=public).
+                # The server being able to make outbound requests = reachability (the intended function), which
+                # alone does **not** constitute an SSRF vulnerability. But it confirms one key thing: this
+                # parameter does make the server **send an outbound request** (a real fetch sink, not an inert parameter).
                 saw_ok = True
-                # 盲 SSRF 升级：既已证实本参数是 fetch sink（排除"根本不发请求"的误报顾虑），且它对内网/
-                # 元数据目标又成功取回(is_error=False、无连接失败指纹)→ 越过信任边界的疑似盲 SSRF。
+                # Blind-SSRF promotion: now that this parameter is confirmed to be a fetch sink (removing the
+                # "makes no request at all" false-positive concern), and it also fetched an internal/metadata
+                # target successfully (is_error=False, no connection-failure fingerprint) -> a suspected blind SSRF crossing the trust boundary.
                 if ssrf_blind and SSRF not in confirmed_classes and not any(
                         w[0] == SSRF and (w[2] or {}).get("type") == "blind_ssrf" for w in weak):
                     bp, bargs, btext = ssrf_blind[0]
                     weak.append((SSRF, bp, {"type": "blind_ssrf", "channel": "oob+internal",
                         "internal_target": bp.value, "snippet": (btext or "")[:160],
-                        "note": "带外回连证实本参数会外发请求(fetch sink)，且对内网/元数据目标成功取回"
-                                "(is_error=False、无连接失败指纹)→ 疑似越过信任边界的盲 SSRF，需人工复核"}))
+                        "note": "the out-of-band callback confirms this parameter makes an outbound request (fetch sink), and it fetched an internal/metadata target successfully "
+                                "(is_error=False, no connection-failure fingerprint) -> suspected blind SSRF crossing the trust boundary, needs manual review"}))
             else:
                 _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob"))
 
-    # ── PT 路径接受自校准差分（通用疑似档）—— 存在性敏感版 ────────────────────
-    # 写/操作型路径穿越常无内容回显、也无配套读回器 → inband 签名 / cross_tool 读回够不到 → 旧版漏报。
-    # 旧判据"两条随便的内界路径输出不同(t1≠t2)"被纯回显满足（a.txt≠b.txt 的回显即令 t1≠t2），分不清
-    # "真对路径做文件操作"与"把输入回显进响应"→ 在非路径参数(数字/日期/key)与修复版上大面积误报。
-    # 改为【存在性敏感】：工具对「真实存在的越界目标」与「确定不存在的越界目标」反应不同（去掉回显路径串
-    # 后"模板"仍异）→ 才证明工具真去访问了越界文件系统、而非回显。探针用 /dev/null、/tmp(存在/可写父)
-    # 对比 /<prefix>..._nx/d/x(父目录都不存在)，均无破坏性。门控：只对 sink 标为高权重 PT(≥W_MED)的参数跑，
-    # 滤掉数字/日期/枚举等非路径参数。安全性：修复版对越界先围栏→存在/不存在都被拒成同一"blocked/规范化"
-    # 模板→存在性不敏感→不触发（负样本天然安全）。
+    # -- PT path-acceptance self-calibrating differential (generic suspected tier) -- existence-sensitive version --
+    # Write/operation-type path traversal often has no content echo and no paired read-back tool -> inband
+    # signature / cross_tool read-back cannot reach it -> the old version missed it.
+    # The old criterion "two arbitrary in-bounds paths produce different output (t1!=t2)" is satisfied by pure
+    # echo (echoing a.txt != b.txt already makes t1!=t2), unable to tell "truly doing a file operation on the
+    # path" from "echoing the input into the response" -> widespread false positives on non-path parameters
+    # (numbers/dates/keys) and on fixed versions.
+    # Changed to [existence-sensitive]: the tool reacts differently to a "real existing out-of-bounds target" and
+    # a "definitely-nonexistent out-of-bounds target" (the "template" still differs after stripping the echoed
+    # path strings) -> only then does it prove the tool truly accessed the out-of-bounds filesystem, not echoed.
+    # Probes use /dev/null, /tmp (existing/writable parent) vs /<prefix>..._nx/d/x (parent dirs do not exist),
+    # all non-destructive. Gated: only run on parameters the sink marked as high-weight PT (>=W_MED), filtering
+    # out numbers/dates/enums and other non-path parameters. Safety: a fixed version fences off the out-of-bounds
+    # first -> existing/nonexistent both rejected into the same "blocked/normalized" template -> existence-insensitive
+    # -> not triggered (negative samples are inherently safe).
     pt_weight = getattr(prior, "class_weights", {}).get(PT, 0.0) if prior else 0.0
     if (pt_probe is not None and PT not in confirmed_classes and not any(w[0] == PT for w in weak)
             and pt_weight >= W_MED):
         import secrets
         tk = secrets.token_hex(4)
-        # 可达(存在/父目录存在)目标 vs 不可达(父目录都不存在)目标，各给 绝对+遍历 形态
+        # reachable (existing / parent exists) targets vs unreachable (parent dirs do not exist) targets, each in absolute + traversal form
         reach = ["/dev/null", "../../../../../../dev/null",
                  f"/tmp/{TOKEN_PREFIX}{tk}_r", f"../../../../../../tmp/{TOKEN_PREFIX}{tk}_r"]
         nxs = [f"/{TOKEN_PREFIX}{tk}_nx/d/x", f"../../../../../../{TOKEN_PREFIX}{tk}_nx/d/x"]
@@ -503,7 +543,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             r, _ = await _timed_call(session, target, a)
             return r
 
-        # 不可达基线：去掉所有探针路径串(并归一数字)后的"模板"集合；非确定性(多个不同模板)则不判
+        # Unreachable baseline: the set of "templates" after stripping all probe path strings (and normalizing numbers); if non-deterministic (several different templates), do not judge
         nx_tpls = set()
         for nv in nxs:
             rn = await _call_path(nv)
@@ -515,53 +555,54 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
                 if rr is None:
                     continue
                 tpl = _norm_pt_readback(rr.get("text") or "", allp)
-                # 存在性敏感：可达目标的"模板"不在任一"不可达"模板中 → 工具对越界目标存在性有反应 → 真路径操作
+                # Existence-sensitive: a reachable target's "template" is not in any "unreachable" template -> the tool reacts to the existence of the out-of-bounds target -> a real path operation
                 if tpl not in nx_tpls:
                     a_oob = _shaped_args(base_args, prior, rv, getattr(pt_probe, "placement", "value")) or base_args
                     weak.append((PT, pt_probe, {"type": "path_accept_nofence", "channel": "self_diff",
                         "reach": rv, "nonexist": nxs[0], "snippet": (rr.get("text") or "")[:160], "args": a_oob,
-                        "note": "工具对'存在的越界目标'(/dev/null 或 /tmp)与'不存在的越界目标'反应不同(去路径串后模板仍异)=真在访问越界文件系统、非单纯回显 → 疑似路径穿越"}))
+                        "note": "the tool reacts differently to an 'existing out-of-bounds target' (/dev/null or /tmp) vs a 'nonexistent out-of-bounds target' (template still differs after stripping path strings) = it is truly accessing the out-of-bounds filesystem, not merely echoing -> suspected path traversal"}))
                     break
 
-    # 有任一类确认 → 返回所有确认结果（每类一条）；不被 weak/clean 覆盖
+    # Any class confirmed -> return all confirmed results (one per class); not overridden by weak/clean
     if confirmed_findings:
         return confirmed_findings
 
-    # 仅弱证据 → 疑似有
+    # Weak evidence only -> suspected
     if weak:
         cls, p, ev = weak[0]
         args = _shaped_args(base_args, prior, p.value, getattr(p, "placement", "value")) or base_args
         return [Finding(target, param, cls, SUSPECTED, payload=p.value, channel=ev.get("channel", p.channel),
                         evidence=ev,
                         sequence=seq_trace + [{"tool": target, "args": args, "payload_param": param}],
-                        note="仅弱证据（错误指纹 / 回连未越边界），需人工复核")]
+                        note="weak evidence only (error fingerprint / callback not crossing the boundary), needs manual review")]
 
-    # 无任何命中：区分"疑似无"（本参数确有探针触达 sink）与"未触达"。
-    # 触达只看本参数自己的探针——有正常返回(saw_ok)，或载荷抵达后端程序被其当非法参数拒
-    # （程序级报错 saw_program_error）。不拿工具级 baseline 顶替：否则强类型/枚举/pattern
-    # 参数的探针被 schema 全弹回时，会被 baseline 误翻成"疑似无漏洞"，掩盖"其实没测到"。
+    # No hit at all: distinguish "likely clean" (this parameter did have a probe reach the sink) from "unreached".
+    # Reachability only looks at this parameter's own probes — a normal return (saw_ok), or a payload reaching the
+    # backend program and being rejected as an illegal argument (program-level error saw_program_error). Do not
+    # substitute the tool-level baseline: otherwise, when a strongly-typed/enum/pattern parameter's probes are all
+    # bounced by the schema, the baseline would mistranslate it into "likely no vulnerability", masking "actually not tested".
     if saw_ok or saw_program_error:
         return [Finding(target, param, repr_cls, LIKELY_CLEAN, note="")]
     if type_locked:
         return [Finding(target, param, repr_cls, UNREACHED,
-                        note="未触达 sink：服务端对该数值参数强制类型校验，字符串注入无法进入（探 1 条即停，省余下探针）")]
+                        note="sink not reached: the server enforces the type of this numeric parameter, so string injection cannot get in (probe 1 then stop, saving the remaining probes)")]
     if not sent_any:
-        # 所有载荷都因参数被声明约束锁死（uuid/锚死 pattern/刚性 format）而无法构造合法骨架 → 未发送
+        # All payloads could not be built into a valid skeleton because the parameter is locked down by a declared constraint (uuid / anchored pattern / rigid format) -> not sent
         return [Finding(target, param, repr_cls, UNREACHED,
-                        note="未触达 sink：参数被声明约束（格式/枚举/类型）锁死，无法构造满足约束的注入载荷（未发送）")]
-    note = "未触达 sink：本参数所有探针在到达后端程序前被输入校验/参数约束拒绝"
+                        note="sink not reached: the parameter is locked down by a declared constraint (format/enum/type), no constraint-satisfying injection payload could be built (not sent)")]
+    note = "sink not reached: all of this parameter's probes were rejected by input validation / parameter constraints before reaching the backend program"
     if last_err:
         err = str(last_err)
         blamed = _blamed_param(err)
         if blamed and blamed != str(param).split(".")[0]:
-            # 报错指向的是另一个参数 → 不是本参数打不进，而是某兄弟必填参数的填充值不合法
-            note += f"（实际被兄弟参数 '{blamed}' 的约束挡下，非本参数本身）"
-        note += f"；完整错误：{err[:400]}"
+            # The error points at another parameter -> it is not this parameter being unable to get in, but a sibling required parameter's fill value being invalid
+            note += f" (actually blocked by the constraint of sibling parameter '{blamed}', not this parameter itself)"
+        note += f"; full error: {err[:400]}"
     return [Finding(target, param, repr_cls, UNREACHED, note=note)]
 
 
 async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
-    """复测去抖：再跑 rounds 次，取中位的额外时延，仍 >= 目标*0.6 才算确认。"""
+    """Retest debounce: run `rounds` more times, take the median extra delay, and only confirm if it is still >= target*0.6."""
     adds = []
     for _ in range(rounds):
         res, lat = await _timed_call(session, target, args)
@@ -571,7 +612,7 @@ async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
 
 
 def _strip_paths(s, paths):
-    """去掉文本里回显的路径串后 strip，用于路径穿越自对照差分的"路径回显无关"比较。"""
+    """Strip the echoed path strings from the text then strip(), for the "path-echo-independent" comparison in the path-traversal self-differential."""
     s = s or ""
     for pth in paths:
         s = s.replace(pth, "")
@@ -579,24 +620,27 @@ def _strip_paths(s, paths):
 
 
 def _norm_pt_readback(s, paths):
-    """路径穿越自对照比较前的归一：先去回显路径串，再把数字串折叠为占位符 `#`。
-    折叠数字是为了消除读器输出里**易变的数值噪声**（如 duration 毫秒、计数、时间戳）——
-    否则读器自身的运行抖动（landing duration:5 vs control:6）会被误当成"落地内容差异"而误报。
-    真实落地带来的是结构/文本差异（文件正文 vs 不存在），不是单纯数字变化，故折叠数字不伤真例。"""
+    """Normalization before the path-traversal self-differential comparison: first strip the echoed path strings,
+    then collapse digit runs into the placeholder `#`. Collapsing digits removes the **volatile numeric noise** in
+    the reader's output (e.g. duration ms, counts, timestamps) — otherwise the reader's own runtime jitter
+    (landing duration:5 vs control:6) would be mistaken for a "landing-content difference" and misfire. A real
+    landing produces a structural/textual difference (file body vs not found), not a mere number change, so
+    collapsing digits does not harm true cases."""
     return re.sub(r"\d+", "#", _strip_paths(s, paths))
 
 
 def _diff_hit(vuln_class, baseline_text, text, payload=None):
-    """差分：参数注入的 --version/--help 若让响应出现版本/用法/getopt 报错特征（基线没有）→ 命中。"""
+    """Differential: for argument injection, if --version/--help makes the response show a version/usage/getopt-error signature (absent in the baseline) -> hit."""
     if vuln_class != AI or not text or text == baseline_text:
         return None
     if _VALIDATION_ERR.search(text):
-        return None   # 应用层输入/枚举校验（非 argv 注入），不算
+        return None   # application-level input/enum validation (not an argv injection), does not count
     m = _AI_MARKERS.search(text)
     if m and (not baseline_text or m.group(0).lower() not in baseline_text.lower()):
         marker = m.group(0)
-        # 回显感知（与 inband 同一原则）：匹配到的 marker 若本就是所发载荷的子串，说明它是载荷被
-        # 原样回显（如载荷 "--usage" 让报错里出现 "usage:"），非参数解析器的真实输出 → 不算证据。
+        # Reflection awareness (same principle as inband): if the matched marker is itself a substring of the
+        # sent payload, it is the payload echoed verbatim (e.g. payload "--usage" causing "usage:" in the error),
+        # not the real output of an argument parser -> does not count as evidence.
         core = marker.lower().strip(":").lstrip("-")
         if payload and core and core in str(payload).lower():
             return None
@@ -607,20 +651,21 @@ def _diff_hit(vuln_class, baseline_text, text, payload=None):
 
 
 def _code_ev(prior, p, hit_evidence):
-    """代码注入确认的证据包（口径 ①，不特判"算术 vs 代码"）：
-    服务端把参数求值并回显了我未发出的计算结果 → 即确认代码注入（CWE-94，执行确认）。
-    tier 只作**危害标注**、不作确认闸门：L2=越过算术的通用代码/模板求值（RCE 级）；L1=算术求值。
-    declared_domain 仅作人工复核附注（LLM 复述的参数声明用途 + 引文），不参与裁决。"""
+    """Evidence package for a code-injection confirmation (policy ①, no special-casing of "arithmetic vs code"):
+    the server evaluated the parameter and echoed a computed result I never sent -> confirm code injection
+    (CWE-94, execution-confirmed). tier is only an **impact label**, not a confirmation gate: L2=general
+    code/template eval beyond arithmetic (RCE-level); L1=arithmetic eval. declared_domain is a manual-review
+    annotation only (the LLM's paraphrase of the parameter's declared purpose + a quote), not part of the adjudication."""
     ev = dict(hit_evidence or {})
     tier = getattr(p, "tier", "") or "L1"
     ev["tier"] = tier
     ev["impact"] = "rce" if tier == "L2" else "arithmetic_eval"
     ev["declared_domain"] = getattr(prior, "declared_domain", "")
     ev["domain_evidence"] = getattr(prior, "domain_evidence", "")
-    ev["note"] = ("服务端对参数求值并回显了未发出的计算结果 → 确认代码注入（CWE-94，执行确认）。"
-                  + ("命中为越过算术的通用代码/模板求值，危害达 RCE 级。" if tier == "L2"
-                     else "命中为算术求值；更高危害以同参数 L2 探针结果为准。")
-                  + " declared_domain 供人工复核。")
+    ev["note"] = ("the server evaluated the parameter and echoed a computed result that was not sent -> confirmed code injection (CWE-94, execution-confirmed). "
+                  + ("the hit is general code/template eval beyond arithmetic, impact reaches RCE-level. " if tier == "L2"
+                     else "the hit is arithmetic eval; for higher impact rely on the same parameter's L2 probe results. ")
+                  + "declared_domain is for manual review.")
     return ev
 
 
@@ -631,7 +676,7 @@ def _confirmed(target, param, cls, p, evidence, seq_trace, final_args, channel):
 
 
 def _repr_class(prior):
-    """代表类别：权重最高的启用类别（供 SKIPPED/UNREACHED 等无命中结论标注）。"""
+    """Representative class: the highest-weight enabled class (to annotate no-hit conclusions like SKIPPED/UNREACHED)."""
     cls = prior.ranked_classes()
     return cls[0] if cls else "unknown"
 

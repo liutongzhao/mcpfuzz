@@ -1,6 +1,6 @@
-"""规划器：大模型据(足量)描述假设一条到达目标工具的调用序列。带缓存与兜底。
+"""Planner: the LLM, from (sufficient) descriptions, hypothesizes a call sequence that reaches the target tool. With caching and a fallback.
 
-计划是"假设"，运行时逐跳验证；最后一步即目标工具，其参数构成"发射台"。
+The plan is a "hypothesis", verified hop-by-hop at runtime; the last step is the target tool, whose parameters form the "launch pad".
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ Rules:
 EXAMPLE = """Example — target tool `searchProductForMcp(deptId:int required, query:str required)`, catalog has `queryShopList(longitude, latitude)` described as returning nearby shops:
 {"steps":[
   {"step":1,"tool":"queryShopList","args":{"longitude":{"src":"literal","value":121.47},"latitude":{"src":"literal","value":31.23}}},
-  {"step":2,"tool":"searchProductForMcp","args":{"deptId":{"src":"from_step","step":1,"extract":"a shop's deptId / 门店ID"},"query":{"src":"literal","value":"coffee"}}}
+  {"step":2,"tool":"searchProductForMcp","args":{"deptId":{"src":"from_step","step":1,"extract":"a shop's deptId / store ID"},"query":{"src":"literal","value":"coffee"}}}
 ],"reachable":true,"note":""}"""
 
 
@@ -50,17 +50,18 @@ _URL_KEYS = ("url", "uri", "endpoint", "link", "href")
 
 
 def _fallback_literal(param):
-    """给参数一个满足其声明约束的良性值。委托给约束感知生成器 valuegen.benign_value
-    （确定性阶梯：default/example/enum → format → pattern前缀 → 名字启发 → 类型兜底+长度/数值界收尾）。
-    通用、由参数自身 schema 约束驱动，不针对任何服务器。见 docs/参数值生成优化方案.md。"""
+    """Give the parameter a benign value satisfying its declared constraints. Delegates to the
+    constraint-aware generator valuegen.benign_value (deterministic ladder: default/example/enum ->
+    format -> pattern prefix -> name heuristic -> type fallback + length/numeric-bound finishing).
+    Generic, driven by the parameter's own schema constraints, not targeted at any server. See the value-generation design doc."""
     from calchas import valuegen
     return valuegen.benign_value(param)
 
 
 def fallback_plan(target_tool) -> Plan:
-    """大模型不可用/失败时：长度 1 计划，用 schema 值填满目标工具参数。"""
+    """When the LLM is unavailable/failing: a length-1 plan, filling the target tool's parameters with schema values."""
     args = {p.path: {"src": "literal", "value": _fallback_literal(p)} for p in target_tool.params}
-    return Plan(steps=[Step(1, target_tool.name, args)], reachable=True, note="fallback(无大模型)")
+    return Plan(steps=[Step(1, target_tool.name, args)], reachable=True, note="fallback (no LLM)")
 
 
 def _describe_tool(t, full=True):
@@ -76,18 +77,18 @@ def _parse(text) -> dict:
     text = re.sub(r"```(?:json)?", "", text).strip()
     s, e = text.find("{"), text.rfind("}")
     if s == -1 or e <= s:
-        raise ValueError("无 JSON")
+        raise ValueError("no JSON")
     return json.loads(text[s:e + 1])
 
 
 def _validate(data, target_name, tool_names) -> Plan:
     steps_raw = data.get("steps") or []
     if not steps_raw or steps_raw[-1].get("tool") != target_name:
-        raise ValueError("计划末步不是目标工具")
+        raise ValueError("plan final step is not the target tool")
     steps = []
     for i, s in enumerate(steps_raw, 1):
         if s.get("tool") not in tool_names:
-            raise ValueError(f"未知工具 {s.get('tool')}")
+            raise ValueError(f"unknown tool {s.get('tool')}")
         steps.append(Step(i, s["tool"], s.get("args") or {}))
     return Plan(steps=steps, reachable=bool(data.get("reachable", True)), note=str(data.get("note", "")))
 
@@ -115,7 +116,7 @@ def plan(target_tool, catalog, cache_dir: Path | None = None, max_attempts: int 
                                target_tool.name, tool_names)
             break
         except AllModelsUnavailable:
-            raise   # 所有模型都挂了：冒泡暂停，不退化成 schema 兜底
+            raise   # all models down: bubble up to pause, do not degrade to the schema fallback
         except Exception:
             result = None
     if result is None:

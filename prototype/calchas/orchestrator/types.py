@@ -1,19 +1,20 @@
-"""编排器数据结构：调用计划、执行结果。"""
+"""Orchestrator data structures: call plan, execution result."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# 五态判定（见 docs/判定方法论.md）
-CONFIRMED = "confirmed"        # 出现铁证，或可证经复测 → 确认漏洞
-SUSPECTED = "suspected"        # 仅弱证据（错误指纹 / SSRF 回连未越边界）→ 疑似有，待人工复核
-LIKELY_CLEAN = "likely_clean"  # 确有证据表明已触达 sink，但全套无命中 → 疑似无漏洞
-UNREACHED = "unreached"        # 载荷确实发出了，但全部被目标工具拒绝/报错且基线不可达 → 可能没触达 sink
-SKIPPED = "skipped"            # 工具侧原因根本没发出有效测试：计划不可达 / 前置步骤报错 / 会话异常 /
-                               # 目标实参取值失败。这不等于"无漏洞"，统计时必须与 UNREACHED 分开。
+# Five-state verdict (see the verdict-methodology doc)
+CONFIRMED = "confirmed"        # hard evidence appeared, or provable on retest -> confirmed vulnerability
+SUSPECTED = "suspected"        # only weak evidence (error fingerprint / SSRF callback not crossing the boundary) -> suspected, pending manual review
+LIKELY_CLEAN = "likely_clean"  # there is evidence the sink was reached, but the full battery got no hit -> likely no vulnerability
+UNREACHED = "unreached"        # the payloads were sent, but all were rejected/errored by the target tool and the baseline is unreachable -> the sink was probably not reached
+SKIPPED = "skipped"            # a tool-side reason meant no valid test was ever sent: plan unreachable / prerequisite step errored / session failure /
+                               # failure to resolve the target's arguments. This does NOT equal "no vulnerability"; in statistics it must be kept separate from UNREACHED.
 
-# 可用性/拒绝服务观测的 sink 标识。崩溃不是针对某个参数的判定，而是"整套打完后服务器被打到
-# 无响应"的整工具级发现（见 docs/漏洞类型与检测手段.md 第6类）。用独立 sink 值承载，便于在
-# 统计与报告里把它从 per-param 五态里单独拎出，不污染参数覆盖率。
+# Sink marker for availability / denial-of-service observation. A crash is not a per-parameter verdict but a
+# whole-tool finding of "the server was beaten to unresponsiveness after the full battery" (see the
+# vuln-types / detection-techniques doc, class 6). Carried by a separate sink value so that in statistics and
+# reporting it can be pulled out of the per-param five-state, not polluting parameter coverage.
 DOS = "denial_of_service"
 
 
@@ -26,7 +27,7 @@ class Step:
 
 @dataclass
 class Plan:
-    steps: list                # list[Step]，最后一步即目标工具
+    steps: list                # list[Step], the last step is the target tool
     reachable: bool = True
     note: str = ""
 
@@ -40,5 +41,5 @@ class Finding:
     payload: str = ""
     channel: str = ""
     evidence: dict = field(default_factory=dict)
-    sequence: list = field(default_factory=list)   # 可复现序列（前置调用 + 命中载荷）
+    sequence: list = field(default_factory=list)   # reproducible sequence (prerequisite calls + the hitting payload)
     note: str = ""

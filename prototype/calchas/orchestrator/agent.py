@@ -1,14 +1,19 @@
-"""序列构建智能体（LangGraph 版）：用标准 ReAct 智能体实跑，产出到达目标工具的调用序列（Plan）。
+"""Sequence-construction agent (LangGraph version): runs a standard ReAct agent live to produce a call
+sequence (Plan) that reaches the target tool.
 
-见 docs/序列构建智能体设计.md。
-- 框架：langgraph 预制 ReAct 智能体 + langchain-mcp-adapters（把目标 MCP 工具接入智能体）+
-  ChatOpenAI（走项目中转）。框架负责"调用→看返回→决定下一步"的循环；我们负责**目标/边界提示、
-  退出预算、从执行轨迹抽配方、可达裁决**。
-- 边界：只用**良性值**把目标工具带到"能合法调用"的就绪状态——不注入载荷、不判漏洞（system 提示约束）。
-- 发现阶段自建 MCP 连接（与攻击会话分离）；产物 Plan（录制的配方）交给 executor 在攻击会话里确定性回放。
-- 退出：recursion_limit 作硬预算；提示里要求"能调通目标就停 / 不可达就说明"；**可达与否以执行轨迹为准**
-  （目标工具是否被成功调用），不取 LLM 自述。
-- langgraph 不可用或出错时，回退到 planner 一次性规划 / schema 兜底。
+See the sequence-construction agent design doc.
+- Framework: langgraph's prebuilt ReAct agent + langchain-mcp-adapters (connecting the target MCP tools to the
+  agent) + ChatOpenAI (via the project relay). The framework handles the "call -> observe -> decide next" loop;
+  we provide the **goal/boundary prompt, exit budget, recipe extraction from the execution trace, and the
+  reachability verdict**.
+- Boundary: use **benign values only** to bring the target tool to a "legally callable" ready state — no
+  payload injection, no vulnerability judgement (constrained by the system prompt).
+- The discovery phase builds its own MCP connection (separate from the attack session); the resulting Plan (the
+  recorded recipe) is handed to executor for deterministic replay in the attack session.
+- Exit: recursion_limit as a hard budget; the prompt asks to "stop once the target calls through / explain if
+  unreachable"; **reachability is judged by the execution trace** (whether the target tool was successfully
+  called), not by the LLM's self-report.
+- When langgraph is unavailable or errors, fall back to planner's one-shot planning / schema fallback.
 """
 from __future__ import annotations
 
@@ -38,19 +43,20 @@ Rules:
 
 
 def _sanitize_tool_names(tools) -> dict:
-    """把工具名合规化为 OpenAI function name（仅允许 [a-zA-Z0-9_-]，长度 ≤64），**就地改写**
-    每个 tool.name，返回 {合规名: 原始名}。
+    """Normalize tool names into OpenAI function names (only [a-zA-Z0-9_-] allowed, length <=64), **rewriting
+    each tool.name in place**, and return {sanitized_name: original_name}.
 
-    为什么安全：langchain-mcp-adapters 真正调用 MCP 时用的是闭包里捕获的原始 tool.name
-    （request.name → session.call_tool(request.name)），与 StructuredTool.name 无关；改 .name
-    只影响发给 LLM 的 function name。为什么必要：MCP/网关工具名常含点号（如网关前缀
-    io.github.X_Y-tool），而 OpenAI function name 不允许点号，带点号会被中转以 502 拒绝，
-    导致整个序列构建智能体瘫痪。通用处理任意非法字符，不针对任何具体服务。"""
+    Why it is safe: when langchain-mcp-adapters actually calls MCP it uses the original tool.name captured in
+    the closure (request.name -> session.call_tool(request.name)), unrelated to StructuredTool.name; changing
+    .name only affects the function name sent to the LLM. Why it is necessary: MCP/gateway tool names often
+    contain dots (e.g. the gateway prefix io.github.X_Y-tool), and an OpenAI function name disallows dots — a
+    dotted name is rejected by the relay with 502, paralyzing the whole sequence-construction agent. Handles
+    any illegal character generically, not targeted at any specific server."""
     mapping: dict = {}
     for t in tools:
         orig = t.name
         san = re.sub(r"[^a-zA-Z0-9_-]", "_", orig)[:64] or "tool"
-        if san in mapping:                       # 合规化后撞名（如 a.b 与 a_b）→ 加后缀去重
+        if san in mapping:                       # collision after normalization (e.g. a.b and a_b) -> add a suffix to deduplicate
             base, i = san, 1
             while san in mapping:
                 suf = f"_{i}"
@@ -90,7 +96,7 @@ def _plan_from_dict(d: dict) -> Plan:
 
 
 def _extract_calls(messages) -> list:
-    """从消息轨迹还原 (tool, args, result_text, is_error) 的时间序列表。"""
+    """Reconstruct a time-ordered list of (tool, args, result_text, is_error) from the message trace."""
     from langchain_core.messages import ToolMessage
     pending: dict = {}
     calls = []
@@ -108,24 +114,28 @@ def _extract_calls(messages) -> list:
 
 
 def _arg_spec(param_name, value, prior_results):
-    """决定一个参数在配方里是录"字面量"还是"依赖边(from_step)"：
-    若该值**出现在某个更早步骤的成功响应里**（= 动态值，如新建会话返回的 session_id）→ 录成
-    from_step，回放时用 extract_value 从那一步**当次**响应重新取值，避免字面量过期（见 ④/
-    docs/序列构建智能体设计.md）。否则录字面量。仅对足够长/非平凡的值启用，避免 '1'/'true' 误匹配。"""
+    """Decide whether a parameter is recorded as a "literal" or a "dependency edge (from_step)" in the recipe:
+    if the value **appears in some earlier step's successful response** (= a dynamic value, e.g. a session_id
+    returned by creating a session) -> record it as from_step, so on replay extract_value re-fetches it from
+    that step's **current** response, avoiding a stale literal (see item ④ / the sequence-construction agent
+    design doc). Otherwise record a literal. Enabled only for sufficiently long / non-trivial values, to avoid
+    mis-matching '1'/'true'."""
     sval = str(value)
     if len(sval) >= 6 and not isinstance(value, bool):
         for step_no, rtext in prior_results:
             if rtext and sval in str(rtext):
                 return {"src": "from_step", "step": step_no,
-                        "extract": f"{param_name}（值形如 '{sval[:48]}'）"}
+                        "extract": f"{param_name} (value looks like '{sval[:48]}')"}
     return {"src": "literal", "value": value}
 
 
 def _build_plan_from_calls(target_name, calls, target_tool) -> Plan:
-    """把智能体轨迹里的成功调用拼成配方：成功的前置（非目标）+ 目标工具一步，末步必为目标工具。
+    """Assemble the agent trace's successful calls into a recipe: the successful prerequisites (non-target) + one
+    step for the target tool, with the last step always being the target tool.
 
-    参数默认按值录制；但若某参数的值来自更早步骤的响应（动态值，如新建会话的 session_id）→ 录成
-    from_step 依赖边，回放时重新取值，避免"字面量过期"（会话重置/令牌过期时字面量失效）。
+    Parameters are recorded by value by default; but if a parameter's value comes from an earlier step's
+    response (a dynamic value, e.g. a new session's session_id) -> record it as a from_step dependency edge,
+    re-fetched on replay, avoiding a "stale literal" (a literal is invalidated when the session resets / a token expires).
     """
     good = [(t, a, r) for (t, a, r, err) in calls if not err]
     pre = [(t, a, r) for (t, a, r) in good if t != target_name]
@@ -133,13 +143,13 @@ def _build_plan_from_calls(target_name, calls, target_tool) -> Plan:
     tgt_any = [(t, a) for (t, a, _r, _e) in calls if t == target_name]
 
     steps = []
-    prior_results = []   # [(step_no, response_text)]，只含更早步骤，供 from_step 回链
+    prior_results = []   # [(step_no, response_text)], earlier steps only, for from_step back-linking
     for (t, a, r) in pre:
         sno = len(steps) + 1
         steps.append(Step(sno, t, {k: _arg_spec(k, v, prior_results) for k, v in a.items()}))
         prior_results.append((sno, r))
 
-    # 目标工具实参：优先用成功那次的，其次用任意尝试过的，最后 schema 兜底
+    # Target tool arguments: prefer the successful call's, then any attempted, finally the schema fallback
     if tgt_ok:
         targs = tgt_ok[0][1]
     elif tgt_any:
@@ -150,19 +160,21 @@ def _build_plan_from_calls(target_name, calls, target_tool) -> Plan:
                       {k: _arg_spec(k, v, prior_results) for k, v in targs.items()}))
 
     reachable = bool(tgt_ok)
-    note = (f"智能体走通目标（前置 {len(pre)} 步）" if reachable
-            else f"智能体未确认目标调通，按best-effort回放（前置 {len(pre)} 步）")
-    return Plan(steps=steps, reachable=True, note=note)   # 乐观回放；真实可达由 executor 基线判定
+    note = (f"agent reached the target ({len(pre)} prerequisite steps)" if reachable
+            else f"agent did not confirm the target was callable, best-effort replay ({len(pre)} prerequisite steps)")
+    return Plan(steps=steps, reachable=True, note=note)   # optimistic replay; real reachability is judged by executor's baseline
 
 
 def _is_provider_down(err) -> bool:
-    """区分"凭证/账户级持久失败"与"单工具偶发失败"。
+    """Distinguish a "credential/account-level persistent failure" from a "per-tool transient failure".
 
-    序列构建这条 ChatOpenAI 路径**没有** chat() 的三级切换，内层只要吞掉异常就会无脑退 schema 单步
-    （fallback(无大模型)）。但按 HTTP 语义，401（未授权）/402（需付费）/403（禁止，含余额不足）
-    意味着**这把 key 本身废了**，与具体目标无关——后面每个工具都会失败，继续跑就是假跑。这类要**冒泡**
-    让上层改走 chat() 切换、全挂则暂停；而递归超限 / 偶发 429 / 解析错误等是单工具/瞬时问题，仍可降级。
-    判据只认通用 HTTP 状态码，不绑定任何厂商/服务。"""
+    This ChatOpenAI path for sequence construction has **no** three-tier switching like chat() does; if the
+    inner code merely swallows the exception it mindlessly falls back to a schema single step (fallback (no LLM)).
+    But by HTTP semantics, 401 (unauthorized) / 402 (payment required) / 403 (forbidden, incl. insufficient
+    balance) mean **this key itself is dead**, unrelated to the specific target — every subsequent tool will
+    fail, and continuing is a fake run. These must **bubble up** so the upper layer switches to chat() or pauses
+    if all are down; whereas recursion-limit / transient 429 / parse errors are per-tool/transient issues and can
+    still degrade. The criterion only looks at generic HTTP status codes, not bound to any vendor/service."""
     code = getattr(err, "status_code", None)
     if code is None:
         code = getattr(err, "code", None)
@@ -188,15 +200,17 @@ async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
     rounds = max(1, getattr(settings, "agent_rounds", 6) if settings else 6)
     recursion = max(10, rounds * 6)
 
-    # 持久会话：工具绑定到同一个 MCP 会话，set_working_dir 这类状态在整个探索过程中保留
+    # Persistent session: tools bound to the same MCP session, so state like set_working_dir is retained throughout the exploration
     async with client.session("target") as session:
         tools = await load_mcp_tools(session)
-        # P1：MCP/网关工具名常含点号等 OpenAI function-name 非法字符（function name 仅允许
-        # [a-zA-Z0-9_-]，带点号会被中转 502 拒 → 序列构建全瘫）。在 LLM 边界合规化工具名，
-        # 调用轨迹再映射回真名；真正的 MCP 调用仍走原始名，不受影响。
-        name_map = _sanitize_tool_names(tools)   # {合规名: 原始名}
-        # 目标在 LLM 侧的显示名=其合规名；若 catalog 名与 adapter 名偶有分歧未命中映射，也退回到
-        # “合规化后的目标名”（而非带点号原名），确保递给 LLM 的始终是合法 function name。
+        # P1: MCP/gateway tool names often contain dots and other characters illegal in an OpenAI function name
+        # (which allows only [a-zA-Z0-9_-]; a dotted name is rejected by the relay with 502 -> sequence
+        # construction fully stalls). Normalize tool names at the LLM boundary, then map the call trace back to
+        # the real names; the actual MCP call still uses the original name, unaffected.
+        name_map = _sanitize_tool_names(tools)   # {sanitized_name: original_name}
+        # The target's display name on the LLM side = its sanitized name; if the catalog name and the adapter
+        # name happen to diverge and miss the mapping, also fall back to the "sanitized target name" (not the
+        # dotted original), ensuring what is handed to the LLM is always a valid function name.
         target_disp = next((s for s, o in name_map.items() if o == target_tool.name), None) \
             or (re.sub(r"[^a-zA-Z0-9_-]", "_", target_tool.name)[:64] or "tool")
         agent = create_react_agent(model, tools, prompt=SYSTEM)
@@ -209,57 +223,61 @@ async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
         except Exception as e:
             reporter.emit("agent.limit", level="debug", tool=target_tool.name, error=str(e)[:200])
             if _is_provider_down(e):
-                # 凭证/余额级持久失败：不就地退 schema 单步（那样是假跑），冒泡给 build_sequence
-                # → 先试 chat() 三级切换，全挂才 AllModelsUnavailable → 批量层优雅暂停（可 --resume）。
+                # Credential/balance-level persistent failure: do not fall back to a schema single step here (that
+                # would be a fake run); bubble up to build_sequence -> first try chat()'s three-tier switching,
+                # and only if all are down -> AllModelsUnavailable -> the batch layer pauses gracefully (resumable with --resume).
                 raise
 
     messages = (last or {}).get("messages", []) if isinstance(last, dict) else []
     calls = _extract_calls(messages)
-    calls = [(name_map.get(t, t), a, r, e) for (t, a, r, e) in calls]   # 合规名 → 真实工具名
+    calls = [(name_map.get(t, t), a, r, e) for (t, a, r, e) in calls]   # sanitized name -> real tool name
     reporter.emit("agent.done", level="debug", tool=target_tool.name, calls=len(calls))
     if not calls:
-        return planner.fallback_plan(target_tool)   # 智能体一步没调起来 → schema 兜底单步计划
+        return planner.fallback_plan(target_tool)   # the agent did not get a single call through -> schema fallback single-step plan
     return _build_plan_from_calls(target_tool.name, calls, target_tool)
 
 
 _MODEL = None
-_MODEL_PROVIDER = None   # 记录 _MODEL 当前绑的 provider 名；故障切换后 provider 变了则重建
+_MODEL_PROVIDER = None   # records the provider name _MODEL is currently bound to; rebuild if the provider changed after failover
 
 
 def reset_model():
-    """丢弃进程内复用的 ChatOpenAI 单例。单工具超时中断后，智能体常驻事件循环会被整只丢弃
-    （见 core._reset_agent_loop_after_abort）；该单例的 httpx 客户端绑在旧循环上，必须一并重置，
-    否则下一个工具复用到绑死在已关闭循环上的客户端 → 'Event loop is closed'（P7）。"""
+    """Discard the process-reused ChatOpenAI singleton. After a per-tool timeout interrupt, the agent's
+    persistent event loop is discarded entirely (see core._reset_agent_loop_after_abort); this singleton's httpx
+    client is bound to the old loop and must be reset along with it, otherwise the next tool reuses a client
+    bound to a closed loop -> 'Event loop is closed' (P7)."""
     global _MODEL, _MODEL_PROVIDER
     _MODEL = None
     _MODEL_PROVIDER = None
 
 
 def _make_model(settings):
-    """返回进程内复用的 ChatOpenAI 单例，**固定按 llm_failover.agent_provider()（minimax）构建**。
+    """Return the process-reused ChatOpenAI singleton, **always built from llm_failover.agent_provider() (minimax)**.
 
-    为什么单例：ChatOpenAI 的 httpx 异步客户端在首次使用时绑定到当时的事件循环（即常驻的
-    agent 事件循环，见 core._AGENT_LOOP），跨所有工具/服务复用同一个即可；若每工具新建一个
-    ChatOpenAI，会在该循环上累积大量 httpx 客户端（socket/FD）直到进程退出。
+    Why a singleton: ChatOpenAI's httpx async client binds to the event loop at first use (i.e. the persistent
+    agent event loop, see core._AGENT_LOOP); reusing one across all tools/servers is fine; if a new ChatOpenAI
+    were created per tool, a large number of httpx clients (sockets/FDs) would accumulate on that loop until the
+    process exits.
 
-    为什么固定走 minimax：这条 ChatOpenAI 路径在单次 agent 运行内**不做**三级级联兜底，主模型
-    ai-pixel 一旦 429，整条序列构建就退回 schema 单步（fallback(无大模型)）。故绑定到最稳定、
-    已实测支持 function calling 的 minimax（见 llm_config.AGENT_PROVIDER_NAME）。sink 推断/规划
-    仍走 chat() 的三级切换（ai-pixel→deepseek→minimax），与此解耦、互不影响。"""
+    Why always minimax: this ChatOpenAI path does **not** do three-tier cascading fallback within a single agent
+    run, so once the primary model ai-pixel hits 429, the whole sequence construction falls back to a schema
+    single step (fallback (no LLM)). So it is bound to the most stable model that has been verified to support
+    function calling, minimax (see llm_config.AGENT_PROVIDER_NAME). Sink inference / planning still go through
+    chat()'s three-tier switching (ai-pixel -> deepseek -> minimax), decoupled from this and not interfering."""
     global _MODEL, _MODEL_PROVIDER
     from calchas import llm_failover
     prov = llm_failover.agent_provider()
     if _MODEL is not None and _MODEL_PROVIDER == prov["name"]:
         return _MODEL
     from langchain_openai import ChatOpenAI
-    # base_url 形如 .../v1/chat/completions；ChatOpenAI 需要 .../v1（会自己拼 /chat/completions）
+    # base_url looks like .../v1/chat/completions; ChatOpenAI needs .../v1 (it appends /chat/completions itself)
     base = prov["base_url"]
     for suf in ("/chat/completions", "/chat/completions/"):
         if base.endswith(suf):
             base = base[: -len(suf)]
             break
     timeout = getattr(settings, "timeout", None) or 60.0
-    # 不设 temperature：该中转对 temperature 敏感；探测已确认缺省可用且支持工具调用
+    # No temperature set: this relay is sensitive to temperature; probing confirmed the default works and supports tool calling
     _MODEL = ChatOpenAI(base_url=base, api_key=prov["api_key"], model=prov["model"],
                         timeout=max(timeout, 60.0), max_retries=1)
     _MODEL_PROVIDER = prov["name"]
@@ -267,7 +285,7 @@ def _make_model(settings):
 
 
 async def build_sequence(url, headers, target_tool, catalog, settings, reporter, cache_dir=None) -> Plan:
-    """产出让 target_tool 可合法调用的序列（Plan）。优先 LangGraph 智能体；不可用/出错回退一次性规划。"""
+    """Produce a sequence (Plan) that makes target_tool legally callable. Prefer the LangGraph agent; fall back to one-shot planning if unavailable/erroring."""
     cf = _cache_file(cache_dir, catalog.server_name, target_tool.name)
     if cf and cf.exists():
         reporter.emit("agent.cache_hit", level="debug", tool=target_tool.name)
@@ -276,11 +294,12 @@ async def build_sequence(url, headers, target_tool, catalog, settings, reporter,
     try:
         plan = await _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
     except AllModelsUnavailable:
-        raise   # 所有模型都挂了：不降级成 schema 兜底，冒泡让批量层暂停检测
+        raise   # all models down: do not degrade to the schema fallback, bubble up so the batch layer pauses detection
     except Exception as e:
         reporter.emit("agent.error", level="debug", tool=target_tool.name, error=str(e)[:200])
-        # 回退：大模型一次性规划（planner 走 llm_failover，会自动切备用并把游标移到可用模型，
-        # 下一个工具的智能体即随之切换）；若连规划也全模型失败 → AllModelsUnavailable 冒泡暂停。
+        # Fallback: LLM one-shot planning (planner goes through llm_failover, which auto-switches to a backup and
+        # moves the cursor to a working model, so the next tool's agent switches accordingly); if even planning
+        # fails on all models -> AllModelsUnavailable bubbles up to pause.
         try:
             plan = planner.plan(target_tool, catalog) if (settings is None or settings.llm_plan) \
                 else planner.fallback_plan(target_tool)
