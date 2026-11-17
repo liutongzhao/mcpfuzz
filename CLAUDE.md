@@ -18,7 +18,7 @@
 ├── README.md         工具对外说明（英文，即 PyPI 页面）
 ├── LICENSE           Apache-2.0
 ├── dev/              开发调试脚本（不进包）
-├── deploy/           实验基础设施（批量检测单元、OOB 采集器、冻结批次）
+├── deploy/           实验基础设施（实验服务、批量检测单元、OOB 采集器、冻结批次）
 ├── dataset/          漏洞数据集流水线脚本（采集/标注/分析 CVE）
 ├── data/             数据集产物（GB 级，不进 git）
 ├── docs/             中文设计文档和论文资料
@@ -31,6 +31,7 @@
 |---|---|---|---|
 | `calchas/` | 检测工具源码。子模块：`cli/` 命令行、`sink/` 阶段一参数分类、`orchestrator/` 阶段二序列构建与攻击编排、`payload/` 载荷电池、`oracle/` 阶段三执行确认；`__about__.py` 存名字/版本 | 实验脚本、数据、针对个别服务的特判 | 是（`payload/_raw/` 词表除外） |
 | `dev/` | 开发者自用的调试/自检脚本：`dump_catalog.py`、`dump_sinks.py`、`selftest_oracle.py`（要连靶机）。在仓库根用 `.venv/bin/python dev/xxx.py` 运行 | 用户会用到的功能（这类功能做成 `calchas` 子命令） | 是 |
+| `deploy/services/` | 服务器 A 上长期运行的实验服务的 compose 配置：`oob/`（calchas-oob）、`gateway/`（calchas-gateway + `configure.sh`），两者通过 docker 网络 `calchas-net` 互通。同步到 A 的 `~/experiment/services/` 运行 | 运行数据 `data/`、密码 `.env` | 是（`data/`、`.env` 除外） |
 | `deploy/cells/` | 大规模批量检测的 docker-compose 单元（gateway+oob+runner）、镜像构建与批次装配脚本 | 镜像包 `*.tar.gz`、真实批次清单、运行结果、运行台账 | 是（产物除外，见 `deploy/cells/.gitignore`） |
 | `deploy/infra/oob/` | OOB 带外回连采集器 | — | 是 |
 | `deploy/batches/` | 已冻结批次的记录，一批一个子目录，冻结后只读 | 进行中的批次 | 是 |
@@ -58,7 +59,13 @@ python3 -m venv .venv && .venv/bin/pip install -e .   # 开发安装（仓库根
 
 ## 待办
 
-- 检测服务器（43.133.80.249 等）的目录结构也要按同样思路规范化，届时把服务器目录约定补到本文件，并更新 `deploy/infra/oob/mcpfuzz-oob.service` 里的旧路径。
+- `deploy/infra/oob/mcpfuzz-oob.service` 写的是 43.133 的旧路径，43.133 已不再做实验，改 `deploy/cells` 时一并处理。
+
+## 实验服务器
+
+- 实验统一在**服务器 A** 的 `/home/cuzisme/experiment` 下进行（SSH：`192.168.0.106`，经 43.133.80.249:60022 的 frp 转发）。目录登记表和操作手册在服务器上的 `experiment/README.md`，在那里新增内容同样要先登记。
+- 检测器只用**发布的 pip 包** `mcp-calchas`，不在服务器上放源码。
+- 43.133.80.249 不再做实验，只作为 A 的 SSH 跳板。
 
 ## Git 规范
 

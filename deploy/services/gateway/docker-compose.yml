@@ -1,0 +1,27 @@
+# mcphub 网关：长期运行的独立服务，被测 MCP 作为 stdio 后端在容器内由 npx/uvx 拉起。
+# 首次部署前先建共享网络：docker network create calchas-net；并 cp .env.example .env 改密码
+# 检测器在宿主机上连 http://127.0.0.1:3000/mcp/<server>；看管理界面用 SSH 隧道（ssh -L 3000:127.0.0.1:3000 <A>）
+name: calchas-gateway
+
+services:
+  gateway:
+    image: calchas-gateway:latest
+    build:
+      context: ../../cells/images/gateway   # 复用 mcphub + node/npx + uv/uvx + curl/git 的镜像定义
+    container_name: calchas-gateway
+    restart: unless-stopped                  # 被注入载荷打挂时自动拉回
+    mem_limit: 3g
+    environment:
+      ADMIN_PASSWORD: ${GATEWAY_PASSWORD:?set GATEWAY_PASSWORD in .env}
+      npm_config_registry: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+      UV_DEFAULT_INDEX: ${UV_INDEX:-https://pypi.org/simple}
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-3000}:3000"   # 只绑本机，不对外
+    volumes:
+      - ./data:/app/data                     # mcp_settings.json 等网关配置持久化到宿主机
+    networks:
+      - calchas-net
+
+networks:
+  calchas-net:
+    external: true

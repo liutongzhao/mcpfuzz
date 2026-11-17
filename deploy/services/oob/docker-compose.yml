@@ -1,0 +1,24 @@
+# OOB 带外回连采集器：长期运行的独立服务。
+# 首次部署前先建共享网络：docker network create calchas-net
+# 被测 MCP（在网关容器里）回连 http://calchas-oob:9100/<token>；检测器在宿主机上查 http://127.0.0.1:9100/__hits
+name: calchas-oob
+
+services:
+  oob:
+    image: calchas-oob:latest
+    build:
+      context: ../../infra/oob        # 复用 deploy/infra/oob 的 collector.py + Dockerfile
+    container_name: calchas-oob
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"   # 以宿主机用户身份写 hits.jsonl，方便普通用户归档/清空
+    restart: unless-stopped
+    mem_limit: 512m
+    ports:
+      - "127.0.0.1:${OOB_PORT:-9100}:9100"   # 只绑本机：宿主机上的检测器查询用，不对外
+    volumes:
+      - ./data:/data                  # 命中记录 hits.jsonl 落到宿主机，容器重建不丢
+    networks:
+      - calchas-net
+
+networks:
+  calchas-net:
+    external: true
