@@ -24,9 +24,12 @@ class Oracle:
     def __init__(self, oob_callback_base: str = DEFAULT_OOB_CALLBACK,
                  oob_query_url: str = DEFAULT_OOB_QUERY):
         self.registry = ProbeRegistry()
+        # The bundled collector serves hits at <callback>/__hits, so the query URL defaults to that.
+        if oob_callback_base and not oob_query_url:
+            oob_query_url = oob_callback_base.rstrip("/") + "/__hits"
         self.oob = OOBChannel(oob_callback_base, oob_query_url)
         self.reflection = ReflectionChannel()
-        # the out-of-band channel is only usable when a callback + query endpoint are given
+        # the out-of-band channel is only usable when a callback base is given
         self.oob_enabled = bool(oob_callback_base and oob_query_url)
 
     def new_probe(self, channel: str, meta: dict | None = None,

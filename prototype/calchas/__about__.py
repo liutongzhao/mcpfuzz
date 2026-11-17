@@ -4,6 +4,8 @@ Change the brand/command name here only; every display site imports from this mo
 """
 from __future__ import annotations
 
+# Release version (read by pyproject via setuptools dynamic metadata; bump before each upload).
+__version__ = "0.1.0"
 # Human-facing brand name, shown in report titles and console banners.
 APP_NAME = "Calchas"
 # Command-line program name (argparse prog) and the console-script entry point.

@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 calchas/payload/_raw/
 *.egg-info/
+dist/
+build/

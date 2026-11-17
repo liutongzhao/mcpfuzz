@@ -262,11 +262,11 @@ def _make_model(settings):
     were created per tool, a large number of httpx clients (sockets/FDs) would accumulate on that loop until the
     process exits.
 
-    Why always minimax: this ChatOpenAI path does **not** do three-tier cascading fallback within a single agent
-    run, so once the primary model ai-pixel hits 429, the whole sequence construction falls back to a schema
-    single step (fallback (no LLM)). So it is bound to the most stable model that has been verified to support
-    function calling, minimax (see llm_config.AGENT_PROVIDER_NAME). Sink inference / planning still go through
-    chat()'s three-tier switching (ai-pixel -> deepseek -> minimax), decoupled from this and not interfering."""
+    Why a single fixed provider: this ChatOpenAI path does **not** cascade across providers within a single
+    agent run, so if it hit a rate-limited provider the whole sequence construction would fall back to a schema
+    single step (fallback (no LLM)). It is therefore bound to one provider that supports function calling
+    (llm_config's agent provider: `agent_provider` in a --llm-config file, else the first provider). Sink
+    inference / planning still go through chat()'s multi-provider failover, decoupled from this."""
     global _MODEL, _MODEL_PROVIDER
     from calchas import llm_failover
     prov = llm_failover.agent_provider()

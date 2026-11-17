@@ -4,19 +4,20 @@ Subcommands:
   scan      full detection (single target / batch), has side effects (sends payloads)
   recon     dry-run: only connect + infer sinks + produce the plan, sends no payload
   report    re-render an existing findings.json into Markdown
-  selftest  verdict / payload-synthesis self-check (wraps the existing scaffold scripts)
+  selftest  offline payload-synthesis self-check (sends nothing)
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import time
 import sys
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from calchas.__about__ import CLI_NAME
+from calchas.__about__ import CLI_NAME, __version__
 from calchas.config import Settings, build_settings
 from calchas.report import render_markdown
 from calchas.llm_failover import AllModelsUnavailable
@@ -26,8 +27,6 @@ from calchas.targetcfg import resolve_target
 
 from .console import build_console
 from .events import JsonlSink, LogFileSink, Reporter
-
-PROTOTYPE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +67,8 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
                        help="do not read/write the sink/plan cache (for ablation/re-runs)")
 
     g_net = p.add_argument_group("verdict / network")
-    g_net.add_argument("--oob-callback", default=None, metavar="URL", help="OOB callback base")
-    g_net.add_argument("--oob-query", default=None, metavar="URL", help="OOB hit-query address")
+    g_net.add_argument("--oob-callback", default=None, metavar="URL", help="OOB collector base URL reachable from the target, e.g. http://1.2.3.4:9100 (unset = OOB channel off)")
+    g_net.add_argument("--oob-query", default=None, metavar="URL", help="OOB hit-query URL (default <oob-callback>/__hits)")
     g_net.add_argument("--poll-rounds", type=int, default=None, metavar="N", help="OOB collection rounds")
     g_net.add_argument("--poll-interval", type=float, default=None, metavar="SEC", help="OOB collection interval")
     g_net.add_argument("--timeout", type=float, default=None, metavar="SEC", help="per-call timeout")
@@ -124,6 +123,7 @@ def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog=CLI_NAME, description="Black-box injection vulnerability detection for MCP servers")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     p_scan = sub.add_parser("scan", help="full detection (connect -> infer sinks -> attack orchestration -> verdict -> report)")
@@ -163,9 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("-o", "--out", default=None, metavar="FILE", help="output path (default print to terminal)")
     p_report.set_defaults(func=cmd_report)
 
-    p_self = sub.add_parser("selftest", help="verdict / payload-synthesis self-check")
-    p_self.add_argument("which", nargs="?", choices=["oracle", "payload"], default=None,
-                        help="run only this one (default both)")
+    p_self = sub.add_parser("selftest", help="offline payload-synthesis self-check (sends nothing)")
     p_self.set_defaults(func=cmd_selftest)
 
     return p
@@ -231,6 +229,9 @@ def _require_llm_or_exit(settings: Settings) -> None:
     """If any LLM-backed feature is on but no provider resolved, exit with a clear, actionable message."""
     needs_llm = settings.llm_sink or settings.llm_plan or settings.sequence_agent
     from calchas import llm_config
+    if needs_llm and not shutil.which("curl"):
+        sys.exit("LLM features need the `curl` executable on PATH (used for chat-completion calls). Install curl,\n"
+                 "or run LLM-free with --no-llm-sink --no-agent --no-llm-plan.")
     if needs_llm and not llm_config.get_providers():
         sys.exit("No LLM provider configured. Pass --llm-base-url, --llm-api-key (or $CALCHAS_LLM_API_KEY) and "
                  "--llm-model,\nor a --llm-config JSON file; or run LLM-free with "
@@ -458,16 +459,8 @@ def cmd_report(args) -> int:
 
 
 def cmd_selftest(args) -> int:
-    import subprocess
-    scripts = {"oracle": "selftest_oracle.py", "payload": "selftest_payload.py"}
-    todo = [args.which] if args.which else list(scripts)
-    rc = 0
-    for name in todo:
-        path = PROTOTYPE_ROOT / scripts[name]
-        print(f"=== selftest: {name} ({path.name}) ===")
-        r = subprocess.run([sys.executable, str(path)], cwd=str(PROTOTYPE_ROOT))
-        rc = rc or r.returncode
-    return rc
+    from calchas.selftest import run
+    return run()
 
 
 def main(argv: list[str] | None = None) -> int:

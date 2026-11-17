@@ -1,23 +1,57 @@
 [project]
-name = "calchas"
-version = "0.1.0"
-description = "Calchas: black-box injection vulnerability detection for MCP servers"
+name = "mcp-calchas"
+dynamic = ["version"]
+description = "Black-box injection vulnerability detection for MCP (Model Context Protocol) servers"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = [
-    "mcp",
-    "rich>=13",
-    "langgraph>=1",
-    "langchain-mcp-adapters>=0.3",
-    "langchain-openai>=1",
+authors = [{ name = "liutongzhao" }]
+keywords = ["mcp", "model-context-protocol", "security", "vulnerability", "injection",
+            "black-box", "scanner", "ssrf", "command-injection", "path-traversal"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
 ]
+dependencies = [
+    "mcp>=1.30,<2",
+    "httpx>=0.27,<1",
+    "rich>=13,<16",
+    "langgraph>=1.2,<2",
+    "langchain-core>=1.0,<2",
+    "langchain-openai>=1.0,<2",
+    "langchain-mcp-adapters>=0.3,<0.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/liutongzhao/mcpfuzz"
+Repository = "https://github.com/liutongzhao/mcpfuzz"
+Issues = "https://github.com/liutongzhao/mcpfuzz/issues"
 
 [project.scripts]
 calchas = "calchas.cli.main:main"
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "calchas.__about__.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["calchas*"]
+
+# Payload word lists (dicts/, _raw/) are reference material only and are never loaded at runtime.
+[tool.setuptools]
+include-package-data = false
