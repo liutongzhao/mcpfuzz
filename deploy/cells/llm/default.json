@@ -1,0 +1,18 @@
+{
+  "_说明": "大模型 provider 配置（所有批次默认）。改模型/地址/key 改这里，然后 docker compose -p <批次> up -d 重建容器即生效，不必重打镜像。某一批要单独换，就在本目录放一份 <批次名>.json（如 batch_3.json）覆盖本默认。api_key 写 env:PIXEL_API_KEY 表示用部署时按批注入的那把 key。providers 按优先级从上到下，失败自动切下一个。",
+  "providers": [
+    {
+      "name": "pixel-deepseek",
+      "base_url": "https://ai-pixel.online/v1/chat/completions",
+      "api_key": "env:PIXEL_API_KEY",
+      "model": "deepseek-v4.1-flash"
+    },
+    {
+      "name": "pixel-glm",
+      "base_url": "https://ai-pixel.online/v1/chat/completions",
+      "api_key": "env:PIXEL_API_KEY",
+      "model": "glm-5.3-flash"
+    }
+  ],
+  "agent_provider": "pixel-deepseek"
+}

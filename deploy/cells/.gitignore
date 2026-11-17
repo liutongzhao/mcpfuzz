@@ -5,5 +5,11 @@ batches/*.jsonl
 !batches/sample.jsonl
 .env
 bearer.txt
+# 大模型 provider 配置：default.json（用 env:PIXEL_API_KEY、无密钥）入库作模板；
+# 按批覆盖文件 llm/<批次>.json 可能写死真实 key → 不入库，只放服务器上。
+llm/*.json
+!llm/default.json
 # 本地打的镜像包（含密钥，绝不入库）
 *.tar.gz
+# 运行台账，仅本地/服务器，不入库
+batch_run_log.md

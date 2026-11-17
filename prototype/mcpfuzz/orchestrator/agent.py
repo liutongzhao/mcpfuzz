@@ -155,6 +155,25 @@ def _build_plan_from_calls(target_name, calls, target_tool) -> Plan:
     return Plan(steps=steps, reachable=True, note=note)   # 乐观回放；真实可达由 executor 基线判定
 
 
+def _is_provider_down(err) -> bool:
+    """区分"凭证/账户级持久失败"与"单工具偶发失败"。
+
+    序列构建这条 ChatOpenAI 路径**没有** chat() 的三级切换，内层只要吞掉异常就会无脑退 schema 单步
+    （fallback(无大模型)）。但按 HTTP 语义，401（未授权）/402（需付费）/403（禁止，含余额不足）
+    意味着**这把 key 本身废了**，与具体目标无关——后面每个工具都会失败，继续跑就是假跑。这类要**冒泡**
+    让上层改走 chat() 切换、全挂则暂停；而递归超限 / 偶发 429 / 解析错误等是单工具/瞬时问题，仍可降级。
+    判据只认通用 HTTP 状态码，不绑定任何厂商/服务。"""
+    code = getattr(err, "status_code", None)
+    if code is None:
+        code = getattr(err, "code", None)
+    try:
+        if int(code) in (401, 402, 403):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(re.search(r"Error code:\s*40[123]\b", str(err)))
+
+
 async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter) -> Plan:
     from langchain_mcp_adapters.client import MultiServerMCPClient
     from langchain_mcp_adapters.tools import load_mcp_tools
@@ -189,6 +208,10 @@ async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
                 last = chunk
         except Exception as e:
             reporter.emit("agent.limit", level="debug", tool=target_tool.name, error=str(e)[:200])
+            if _is_provider_down(e):
+                # 凭证/余额级持久失败：不就地退 schema 单步（那样是假跑），冒泡给 build_sequence
+                # → 先试 chat() 三级切换，全挂才 AllModelsUnavailable → 批量层优雅暂停（可 --resume）。
+                raise
 
     messages = (last or {}).get("messages", []) if isinstance(last, dict) else []
     calls = _extract_calls(messages)

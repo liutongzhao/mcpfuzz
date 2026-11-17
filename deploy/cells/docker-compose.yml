@@ -52,8 +52,14 @@ services:
       #   PIXEL_API_KEY=sk-本批的key BATCH=batch-6 docker compose -p batch-6 up -d
       # 留空则用镜像内置的本地默认 key。第二/三层(deepseek / apikey.fan)统一，已烤进镜像。
       PIXEL_API_KEY: ${PIXEL_API_KEY:-}
+      # 大模型 provider 配置目录（挂载进去，见下 volumes）。llm_config 启动时在此目录找
+      #   先 <BATCH>.json、再 default.json —— 改模型/地址/key 只改这里的 json + 重建容器，不重打镜像。
+      # 留空用默认 /work/llm；找不到任何 json 则用镜像内置默认 provider（兜底，保证能跑）。
+      LLM_PROVIDERS_DIR: /work/llm
     volumes:
       # 每份唯一的差别：这份 cell 扫哪些目标（你切好丢进 batches/ 的那一片）
       - ./batches/${BATCH:-sample}.jsonl:/work/batch.jsonl:ro
+      # 大模型 provider 配置（只读挂载）：改 ./llm/default.json 或 ./llm/<批次>.json 即可换模型/地址
+      - ./llm:/work/llm:ro
       # 产物回收：每份一个目录
       - ./results/${BATCH:-sample}:/work/runs
