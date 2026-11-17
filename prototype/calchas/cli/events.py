@@ -1,25 +1,25 @@
-"""事件模型：检测过程中的进展、发现与结论，用于驱动实时界面与日志落盘。
+"""Event model: progress, findings and conclusions during detection, used to drive the live UI and log persistence.
 
-内核模块只管调 reporter.emit(...)；渲染成什么（终端 / run.log / events.jsonl）由
-cli.console 和 cli.main 决定，内核不感知呈现方式——没挂任何 sink 时 emit 是静默的，
-所以六个检测模块仍可被当作库直接调用，不强依赖 CLI。
+Core modules only call reporter.emit(...); what it renders into (terminal / run.log / events.jsonl) is decided
+by cli.console and cli.main, and the core is unaware of the presentation — with no sink attached, emit is
+silent, so the six detection modules can still be called directly as a library, with no hard dependency on the CLI.
 
-事件词表（type）：
-  run.start / run.end                    一次扫描的起止
-  connect.ok / connect.fail              驱动层连接结果
-  sink.start / sink.labeled / sink.done  sink 推断的进度与逐参数结果
-  attack.plan                            编排器/序列构建为某工具定的调用计划
-  agent.round / agent.done / agent.cache_hit / agent.error   序列构建智能体的闭环进度（debug）
-  attack.tool.error                      该工具会话重试耗尽（标为未测成，不中断整体）
-  launchpad.fail                         发射台没搭起来、目标实参取不到值（未测成）
-  launchpad.warn                         前置步骤有失败但仍继续测试目标工具
-  launchpad.step                         每个前置步骤的发送详情（debug：实参/响应/错误正文）
-  launchpad.ready                        目标工具发射台基线就绪，含基线响应/时延（debug）
-  attack.param.start                     开始对某参数发载荷
-  payload.sent                           每条探针的发送结果（debug，仅 -vv；文件含实参/响应/错误/时延）
-  finding.confirmed / finding.suspected / finding.clean / finding.unreached / finding.skipped   五态判定结论
-  gateway.reset / gateway.error          经 mcphub 网关检测时：后端重置结果 / 网关异常
-  report.saved                           报告落盘路径
+Event vocabulary (type):
+  run.start / run.end                    start/end of one scan
+  connect.ok / connect.fail              driver-layer connection result
+  sink.start / sink.labeled / sink.done  sink inference progress and per-parameter result
+  attack.plan                            the call plan the orchestrator / sequence construction set for a tool
+  agent.round / agent.done / agent.cache_hit / agent.error   sequence-construction agent loop progress (debug)
+  attack.tool.error                      the tool's session retries were exhausted (marked not-tested, does not interrupt the whole run)
+  launchpad.fail                         the launch pad could not be built, the target's arguments could not be resolved (not tested)
+  launchpad.warn                         a prerequisite step failed but testing of the target tool continues
+  launchpad.step                         send detail of each prerequisite step (debug: args/response/error body)
+  launchpad.ready                        the target tool's launch-pad baseline is ready, incl. baseline response/latency (debug)
+  attack.param.start                     begin sending payloads for a parameter
+  payload.sent                           send result of each probe (debug, only -vv; the file includes args/response/error/latency)
+  finding.confirmed / finding.suspected / finding.clean / finding.unreached / finding.skipped   five-state verdicts
+  gateway.reset / gateway.error          when detecting via the mcphub gateway: backend reset result / gateway error
+  report.saved                           report persistence path
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from pathlib import Path
 @dataclass
 class Event:
     type: str
-    level: str = "info"        # info | debug（debug 默认不进终端，仅 -vv 或 events.jsonl）
+    level: str = "info"        # info | debug (debug does not reach the terminal by default, only -vv or events.jsonl)
     ts: float = field(default_factory=time.time)
     data: dict = field(default_factory=dict)
 
@@ -42,7 +42,7 @@ class Event:
 
 
 class Reporter:
-    """事件的扇出器：可挂多个 sink（可调用对象，接收一个 Event）。"""
+    """Event fan-out: can attach several sinks (callables that receive one Event)."""
 
     def __init__(self):
         self._sinks: list = []
@@ -56,12 +56,12 @@ class Reporter:
             try:
                 fn(ev)
             except Exception:
-                pass   # 呈现/落盘层的异常绝不能打断检测本身
+                pass   # an exception in the presentation/persistence layer must never interrupt detection itself
         return ev
 
 
 class JsonlSink:
-    """落盘 events.jsonl：机读事件流，一次运行可完整回放，是复现实验的事实来源。"""
+    """Persist events.jsonl: a machine-readable event stream, fully replayable for one run, the source of truth for reproducing experiments."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -76,7 +76,7 @@ class JsonlSink:
 
 
 class LogFileSink:
-    """落盘 run.log：人读全量日志（不受 -q 影响，始终写全量）。"""
+    """Persist run.log: a human-readable full log (unaffected by -q, always writes everything)."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -95,8 +95,9 @@ class LogFileSink:
 _SECRET_KEYS = {"authorization", "api_key", "apikey", "token", "headers"}
 
 
-# run.log 面向人读调试，留足长度：响应/错误正文、嵌套实参都要能看全，便于排查
-# "未触达/报错"的真实原因。真正机读、需完整回放的事实源是 events.jsonl（不截断）。
+# run.log is for human debugging, so keep it long: response/error bodies and nested arguments must be fully
+# visible, to diagnose the real cause of "unreached/errored". The true machine-readable, fully-replayable source
+# of truth is events.jsonl (not truncated).
 _LOGFILE_CAP = 4000
 
 
@@ -107,6 +108,6 @@ def _fmt_data(data: dict) -> str:
             v = "***"
         s = str(v)
         if len(s) > _LOGFILE_CAP:
-            s = s[:_LOGFILE_CAP] + f"…(截断,共{len(s)}字符,完整见 events.jsonl)"
+            s = s[:_LOGFILE_CAP] + f"...(truncated, {len(s)} chars total, see events.jsonl for the full content)"
         parts.append(f"{k}={s}")
     return " ".join(parts)

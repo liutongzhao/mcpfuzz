@@ -1,10 +1,10 @@
-"""Calchas 命令行入口：子命令解析、配置合并、呈现与日志落盘的装配。
+"""Calchas command-line entry: subcommand parsing, config merging, assembly of presentation and log persistence.
 
-子命令：
-  scan      完整检测（单目标 / 批量），有副作用（发载荷）
-  recon     dry-run：只连接+推 sink+出计划，不发任何载荷
-  report    把已有 findings.json 重渲染成 Markdown
-  selftest  判定器/载荷合成自检（收编现有脚手架脚本）
+Subcommands:
+  scan      full detection (single target / batch), has side effects (sends payloads)
+  recon     dry-run: only connect + infer sinks + produce the plan, sends no payload
+  report    re-render an existing findings.json into Markdown
+  selftest  verdict / payload-synthesis self-check (wraps the existing scaffold scripts)
 """
 from __future__ import annotations
 
@@ -31,133 +31,133 @@ PROTOTYPE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 # ---------------------------------------------------------------------------
-# 参数解析
+# argument parsing
 # ---------------------------------------------------------------------------
 
 def _add_common_scan_args(p: argparse.ArgumentParser) -> None:
-    g_scope = p.add_argument_group("检测范围")
+    g_scope = p.add_argument_group("detection scope")
     g_scope.add_argument("--tool", dest="only_tools", action="append", metavar="NAME",
-                        help="只测这个工具（可重复）")
+                        help="test only this tool (repeatable)")
     g_scope.add_argument("--exclude-tool", dest="exclude_tools", action="append", metavar="NAME",
-                        help="排除这个工具（可重复）")
+                        help="exclude this tool (repeatable)")
     g_scope.add_argument("--sink", dest="only_sinks", action="append", metavar="TYPE",
-                        help="只测这个 sink 类型（可重复，如 command_injection）")
+                        help="test only this sink type (repeatable, e.g. command_injection)")
     g_scope.add_argument("--max-payloads", type=int, default=None, metavar="N",
-                        help="每个参数最多发 N 条载荷")
+                        help="send at most N payloads per parameter")
 
-    g_llm = p.add_argument_group("大模型")
+    g_llm = p.add_argument_group("LLM")
     g_llm.add_argument("--no-llm-sink", dest="llm_sink", action="store_false", default=None,
-                       help="sink 推断只用规则（关大模型）")
+                       help="sink inference uses rules only (LLM off)")
     g_llm.add_argument("--no-agent", dest="sequence_agent", action="store_false", default=None,
-                       help="关闭序列构建智能体，回退一次性规划")
+                       help="disable the sequence-construction agent, fall back to one-shot planning")
     g_llm.add_argument("--agent-rounds", dest="agent_rounds", type=int, default=None, metavar="N",
-                       help="序列构建智能体最大修复轮次（默认 6）")
+                       help="max repair rounds for the sequence-construction agent (default 6)")
     g_llm.add_argument("--no-llm-plan", dest="llm_plan", action="store_false", default=None,
-                       help="编排只用兜底计划（长度 1，schema 填值，关大模型）")
+                       help="orchestration uses the fallback plan only (length 1, schema-filled values, LLM off)")
     g_llm.add_argument("--llm-workers", type=int, default=None, metavar="N",
-                       help="sink 推断并发数（默认 6）")
+                       help="sink-inference concurrency (default 6)")
     g_llm.add_argument("--no-cache", dest="use_cache", action="store_false", default=None,
-                       help="不读写 sink/plan 缓存（消融/重测用）")
+                       help="do not read/write the sink/plan cache (for ablation/re-runs)")
 
-    g_net = p.add_argument_group("判定 / 网络")
-    g_net.add_argument("--oob-callback", default=None, metavar="URL", help="OOB 回连基址")
-    g_net.add_argument("--oob-query", default=None, metavar="URL", help="OOB 命中查询地址")
-    g_net.add_argument("--poll-rounds", type=int, default=None, metavar="N", help="OOB 回收轮数")
-    g_net.add_argument("--poll-interval", type=float, default=None, metavar="SEC", help="OOB 回收间隔")
-    g_net.add_argument("--timeout", type=float, default=None, metavar="SEC", help="单次调用超时")
+    g_net = p.add_argument_group("verdict / network")
+    g_net.add_argument("--oob-callback", default=None, metavar="URL", help="OOB callback base")
+    g_net.add_argument("--oob-query", default=None, metavar="URL", help="OOB hit-query address")
+    g_net.add_argument("--poll-rounds", type=int, default=None, metavar="N", help="OOB collection rounds")
+    g_net.add_argument("--poll-interval", type=float, default=None, metavar="SEC", help="OOB collection interval")
+    g_net.add_argument("--timeout", type=float, default=None, metavar="SEC", help="per-call timeout")
     g_net.add_argument("--tool-timeout", dest="tool_timeout", type=float, default=None, metavar="SEC",
-                       help="单工具总时长看门狗：一个工具检测超过该秒数就放弃、记未测成、换下一个"
-                            "（默认 900=15 分钟；<=0 关闭）")
-    g_net.add_argument("--retries", type=int, default=None, metavar="N", help="连接/调用重试次数")
-    g_net.add_argument("--delay", type=float, default=None, metavar="SEC", help="每条载荷之间的间隔（限速）")
+                       help="per-tool total-time watchdog: if a tool's detection exceeds this many seconds, abandon it, record not-tested, move to the next"
+                            " (default 900=15 minutes; <=0 to disable)")
+    g_net.add_argument("--retries", type=int, default=None, metavar="N", help="connection/call retries")
+    g_net.add_argument("--delay", type=float, default=None, metavar="SEC", help="interval between payloads (rate limit)")
 
-    g_out = p.add_argument_group("输出 / 日志")
-    g_out.add_argument("-o", "--out-dir", default=None, metavar="DIR", help="产物根目录（默认 runs/）")
-    g_out.add_argument("--run-name", default=None, metavar="NAME", help="本次运行名（默认 时间戳__server）")
+    g_out = p.add_argument_group("output / logging")
+    g_out.add_argument("-o", "--out-dir", default=None, metavar="DIR", help="product root directory (default runs/)")
+    g_out.add_argument("--run-name", default=None, metavar="NAME", help="name of this run (default timestamp__server)")
     g_out.add_argument("--format", choices=["auto", "rich", "plain", "json"], default=None,
-                       help="控制台呈现方式（默认 auto：TTY 用 rich，否则 plain）")
+                       help="console presentation (default auto: rich on a TTY, else plain)")
     g_out.add_argument("-v", "--verbose", action="count", default=None,
-                       help="更详细（-vv 打印每条载荷）")
-    g_out.add_argument("-q", "--quiet", action="store_true", default=None, help="只出关键结论")
-    g_out.add_argument("--config", default=None, metavar="FILE", help="TOML 配置文件")
+                       help="more verbose (-vv prints every payload)")
+    g_out.add_argument("-q", "--quiet", action="store_true", default=None, help="only key conclusions")
+    g_out.add_argument("--config", default=None, metavar="FILE", help="TOML config file")
 
-    g_safe = p.add_argument_group("安全 / 伦理")
+    g_safe = p.add_argument_group("safety / ethics")
     g_safe.add_argument("--yes", dest="assume_yes", action="store_true", default=None,
-                       help="跳过发起副作用检测前的确认（批量/CI 必备）")
+                       help="skip the confirmation before launching a side-effecting scan (required for batch/CI)")
 
-    g_gw = p.add_argument_group("网关（经 mcphub 检测，可选）")
+    g_gw = p.add_argument_group("gateway (detect via mcphub, optional)")
     g_gw.add_argument("--gateway", dest="gateway_base", default=None, metavar="URL",
-                      help="mcphub 基址，如 http://host:3000；给了才启用网关集成")
+                      help="mcphub base, e.g. http://host:3000; given to enable gateway integration")
     g_gw.add_argument("--gateway-token", dest="gateway_token", default=None, metavar="TOKEN",
-                      help="网关管理 token（x-auth-token），与 --gateway-password 二选一")
+                      help="gateway admin token (x-auth-token), alternative to --gateway-password")
     g_gw.add_argument("--gateway-user", dest="gateway_user", default=None, metavar="USER",
-                      help="网关管理员用户名（默认 admin）")
+                      help="gateway admin username (default admin)")
     g_gw.add_argument("--gateway-password", dest="gateway_password", default=None, metavar="PWD",
-                      help="网关管理员密码（登录换 token）")
+                      help="gateway admin password (logs in to exchange for a token)")
     g_gw.add_argument("--gateway-server", dest="gateway_server", default=None, metavar="NAME",
-                      help="该目标在网关里的后端名（默认从 /mcp/{server} URL 解析）")
+                      help="this target's backend name in the gateway (default parsed from the /mcp/{server} URL)")
     g_gw.add_argument("--gateway-reset", dest="gateway_reset",
                       choices=["off", "before", "after", "both"], default=None,
-                      help="扫描前/后用 reload 重置后端到干净态（默认 off）")
+                      help="reset the backend to a clean state via reload before/after the scan (default off)")
     g_gw.add_argument("--gateway-idle-ms", dest="gateway_idle_ms", type=int, default=None, metavar="MS",
-                      help="网关空闲关闭超时（按需启动），用作首连冷启动预算（默认 300000）")
+                      help="gateway idle-shutdown timeout (on-demand start), used as the first-connect cold-start budget (default 300000)")
     g_gw.add_argument("--gateway-keep-online", dest="gateway_lifecycle", action="store_false", default=None,
-                      help="检测后不停用后端（默认：检测时才 enable 上线、用完 disable 释放资源）")
+                      help="do not disable the backend after detection (default: enable it only during detection, disable to free resources afterwards)")
     g_gw.add_argument("--gateway-launch-map", dest="gateway_launch_map", default=None, metavar="FILE",
-                      help="【仅全网大规模批量用】后端名→启动命令的 JSON（含 launch 字段）。给了则每个目标"
-                           "扫前临时注册到网关、扫完删除；不给（如数据集扫描）则只对预注册后端 enable/disable，不删除")
+                      help="[only for large-scale whole-ecosystem batches] JSON of backend-name -> launch command (with a launch field). If given, each target "
+                           "is temporarily registered to the gateway before its scan and deleted after; if not given (e.g. dataset scanning), it only enable/disables pre-registered backends, not delete")
     g_gw.add_argument("--after-target-cmd", dest="after_target_cmd", default=None, metavar="CMD",
-                      help="每个目标扫完（后端已 disable）后执行的本地命令；在进程已停的安全时刻运行，"
-                           "不会打断冷启动。典型用途：清网关容器缓存防磁盘占满，例如 "
+                      help="a local command run after each target is scanned (backend already disabled); run at the safe moment when the process has stopped, "
+                           "so it does not interrupt a cold start. Typical use: clear the gateway container cache to avoid filling the disk, e.g. "
                            "\"docker exec mcphub sh -c 'rm -rf /root/.npm/_cacache /app/.uv_cache /root/.cache/uv'\"")
     g_gw.add_argument("--after-target-cmd-timeout", dest="after_target_cmd_timeout", type=float,
-                      default=None, metavar="SEC", help="上述收尾命令的超时秒数（默认 120）")
+                      default=None, metavar="SEC", help="timeout in seconds for the above cleanup command (default 120)")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog=CLI_NAME, description="MCP 服务器黑盒注入漏洞检测")
+    p = argparse.ArgumentParser(prog=CLI_NAME, description="Black-box injection vulnerability detection for MCP servers")
     sub = p.add_subparsers(dest="command", required=True)
 
-    p_scan = sub.add_parser("scan", help="完整检测（连接→推 sink→攻击编排→判定→报告）")
-    p_scan.add_argument("targets", nargs="*", help="目标 URL 或 mcpServers 配置文件（可多个）")
-    p_scan.add_argument("--name", default=None, help="配置文件里选用的 server 名（默认取第一个）")
-    p_scan.add_argument("--all", action="store_true", help="配置文件里的所有 server 全测")
-    p_scan.add_argument("--batch", default=None, metavar="FILE", help="批量清单文件（每行一个目标）")
+    p_scan = sub.add_parser("scan", help="full detection (connect -> infer sinks -> attack orchestration -> verdict -> report)")
+    p_scan.add_argument("targets", nargs="*", help="target URL or mcpServers config file (one or more)")
+    p_scan.add_argument("--name", default=None, help="server name selected from the config file (default the first)")
+    p_scan.add_argument("--all", action="store_true", help="test all servers in the config file")
+    p_scan.add_argument("--batch", default=None, metavar="FILE", help="batch list file (one target per line)")
     p_scan.add_argument("--batch-name", default=None, metavar="NAME",
-                        help="批次名：所有结果归到 runs/<NAME>/ 下（默认平铺在 runs/）")
+                        help="batch name: all results go under runs/<NAME>/ (default flat in runs/)")
     p_scan.add_argument("--header", action="append", default=[], metavar="'K: V'",
-                        help="追加 HTTP 头，如鉴权（可重复）")
-    p_scan.add_argument("--fail-fast", action="store_true", help="批量时遇到失败立即中断（默认跳过继续）")
+                        help="append an HTTP header, e.g. for auth (repeatable)")
+    p_scan.add_argument("--fail-fast", action="store_true", help="in batch mode, abort immediately on a failure (default skip and continue)")
     p_scan.add_argument("--resume", action="store_true",
-                        help="断点续跑：跳过本批次 runs/<NAME>/_done.jsonl 里已完成的目标（崩溃/中断后重启直接接着跑）")
+                        help="resume: skip targets already completed in this batch's runs/<NAME>/_done.jsonl (restart after a crash/interruption and continue directly)")
     p_scan.add_argument("--deploy-retry-rounds", dest="deploy_retry_rounds", type=int, default=1, metavar="N",
-                        help="部署失败补跑轮数：整批跑完后把部署失败(后端起不来/连不上)的目标再试 N 轮（默认 1；0 关闭）")
+                        help="deploy-failure retry rounds: after the whole batch finishes, retry deploy-failed (backend won't start / can't connect) targets N more rounds (default 1; 0 to disable)")
     p_scan.add_argument("--dry-run", action="store_true", default=None,
-                        help="等价于 recon：只预览攻击面，不发载荷")
+                        help="equivalent to recon: only preview the attack surface, send no payload")
     _add_common_scan_args(p_scan)
     p_scan.set_defaults(func=cmd_scan)
 
-    p_recon = sub.add_parser("recon", help="侦察：连接+列工具+推 sink+出计划，不发任何载荷")
-    p_recon.add_argument("targets", nargs="*", help="目标 URL 或 mcpServers 配置文件（可多个）")
-    p_recon.add_argument("--name", default=None, help="配置文件里选用的 server 名（默认取第一个）")
-    p_recon.add_argument("--all", action="store_true", help="配置文件里的所有 server 全测")
-    p_recon.add_argument("--batch", default=None, metavar="FILE", help="批量清单文件（每行一个目标）")
+    p_recon = sub.add_parser("recon", help="recon: connect + list tools + infer sinks + produce the plan, send no payload")
+    p_recon.add_argument("targets", nargs="*", help="target URL or mcpServers config file (one or more)")
+    p_recon.add_argument("--name", default=None, help="server name selected from the config file (default the first)")
+    p_recon.add_argument("--all", action="store_true", help="test all servers in the config file")
+    p_recon.add_argument("--batch", default=None, metavar="FILE", help="batch list file (one target per line)")
     p_recon.add_argument("--batch-name", default=None, metavar="NAME",
-                         help="批次名：所有结果归到 runs/<NAME>/ 下（默认平铺在 runs/）")
+                         help="batch name: all results go under runs/<NAME>/ (default flat in runs/)")
     p_recon.add_argument("--header", action="append", default=[], metavar="'K: V'")
     p_recon.add_argument("--fail-fast", action="store_true")
     _add_common_scan_args(p_recon)
     p_recon.set_defaults(func=cmd_recon)
 
-    p_report = sub.add_parser("report", help="把已有 findings.json 重渲染成 Markdown")
-    p_report.add_argument("findings_path", help="findings.json 路径（通常是 runs/<run>/findings.json）")
-    p_report.add_argument("catalog_path", help="同一次运行的 catalog.json 路径")
-    p_report.add_argument("-o", "--out", default=None, metavar="FILE", help="输出路径（默认打印到终端）")
+    p_report = sub.add_parser("report", help="re-render an existing findings.json into Markdown")
+    p_report.add_argument("findings_path", help="findings.json path (usually runs/<run>/findings.json)")
+    p_report.add_argument("catalog_path", help="the same run's catalog.json path")
+    p_report.add_argument("-o", "--out", default=None, metavar="FILE", help="output path (default print to terminal)")
     p_report.set_defaults(func=cmd_report)
 
-    p_self = sub.add_parser("selftest", help="判定器 / 载荷合成自检")
+    p_self = sub.add_parser("selftest", help="verdict / payload-synthesis self-check")
     p_self.add_argument("which", nargs="?", choices=["oracle", "payload"], default=None,
-                        help="只跑这一个（默认两个都跑）")
+                        help="run only this one (default both)")
     p_self.set_defaults(func=cmd_selftest)
 
     return p
@@ -167,19 +167,19 @@ def _parse_headers(raw: list[str]) -> dict:
     out = {}
     for item in raw:
         if ":" not in item:
-            sys.exit(f"--header 格式应为 'K: V'，收到：{item!r}")
+            sys.exit(f"--header format should be 'K: V', got: {item!r}")
         k, v = item.split(":", 1)
         out[k.strip()] = v.strip()
     return out
 
 
 def _resolve_targets(args) -> list[tuple[str, str | None]]:
-    """合并位置参数 + --batch + --all，返回 [(target_arg, name_or_None), ...]。"""
+    """Merge positional args + --batch + --all, returning [(target_arg, name_or_None), ...]."""
     raw = list(args.targets or [])
     if args.batch:
         raw += read_batch_file(args.batch)
     if not raw:
-        sys.exit("至少指定一个目标，或用 --batch 提供清单文件")
+        sys.exit("specify at least one target, or provide a list file with --batch")
 
     pairs: list[tuple[str, str | None]] = []
     for t in raw:
@@ -194,25 +194,26 @@ def _resolve_targets(args) -> list[tuple[str, str | None]]:
 
 
 # ---------------------------------------------------------------------------
-# 子命令实现
+# subcommand implementations
 # ---------------------------------------------------------------------------
 
 def _confirm_or_exit(settings: Settings, n_targets: int) -> None:
     if settings.dry_run or settings.assume_yes:
         return
-    msg = (f"即将对 {n_targets} 个目标发起带副作用的检测（命令/路径/SSRF 载荷，含带外回连与文件写入）。"
-          f" 继续吗？[y/N] ")
+    msg = (f"about to launch a side-effecting scan against {n_targets} target(s) (command/path/SSRF payloads, incl. out-of-band callbacks and file writes)."
+          f" Continue? [y/N] ")
     if not sys.stdin.isatty():
-        sys.exit("非交互环境需显式传 --yes 才能发起检测（或用 --dry-run 仅预览）。")
+        sys.exit("a non-interactive environment must pass --yes explicitly to launch a scan (or use --dry-run to only preview).")
     if input(msg).strip().lower() not in ("y", "yes"):
-        sys.exit("已取消。")
+        sys.exit("cancelled.")
 
 
 def _run_after_target_cmd(settings, label: str) -> None:
-    """每个目标收尾后（后端已 disable）跑一次用户指定的清理命令。
+    """Run a user-specified cleanup command once after each target finishes (backend already disabled).
 
-    放在"后端进程已停"的安全时刻：不会打断任何冷启动安装，且把磁盘峰值压到单个包的量级。
-    失败只告警、不影响检测流程（清理是运维辅助，不该让它中断批量跑）。"""
+    Placed at the safe moment when "the backend process has stopped": it does not interrupt any cold-start
+    install, and keeps the disk peak down to a single package. A failure only warns and does not affect the
+    detection flow (cleanup is an ops aid and should not interrupt a batch run)."""
     cmd = getattr(settings, "after_target_cmd", None)
     if not cmd:
         return
@@ -221,15 +222,15 @@ def _run_after_target_cmd(settings, label: str) -> None:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                            timeout=getattr(settings, "after_target_cmd_timeout", 120.0) or 120.0)
         if r.returncode != 0:
-            print(f"  [收尾命令] {label}: 退出码 {r.returncode}；{(r.stderr or r.stdout).strip()[:200]}")
+            print(f"  [cleanup cmd] {label}: exit code {r.returncode}; {(r.stderr or r.stdout).strip()[:200]}")
     except subprocess.TimeoutExpired:
-        print(f"  [收尾命令] {label}: 超时（已跳过，不影响检测）")
+        print(f"  [cleanup cmd] {label}: timed out (skipped, does not affect detection)")
     except Exception as e:
-        print(f"  [收尾命令] {label}: 执行失败 {str(e)[:150]}（已跳过）")
+        print(f"  [cleanup cmd] {label}: execution failed {str(e)[:150]} (skipped)")
 
 
 def _run_one(target_arg, name, settings, console, extra_headers, dry_run_override=None):
-    """建运行目录、挂日志 sink、跑一个目标；返回 (run_dir, findings)，异常原样抛出。"""
+    """Build the run directory, attach log sinks, run one target; returns (run_dir, findings), re-raising exceptions."""
     run_dir = make_run_dir(Path(settings.out_dir), settings.run_name, name or target_arg)
     reporter = Reporter()
     reporter.add_sink(console.handle)
@@ -254,7 +255,7 @@ def _run_one(target_arg, name, settings, console, extra_headers, dry_run_overrid
 
 
 def _target_key(target_arg: str, name: str | None) -> str:
-    """断点账本里标识一个目标的稳定键：URL（或配置文件路径）+ 可选 server 名。"""
+    """The stable key identifying a target in the resume ledger: URL (or config-file path) + optional server name."""
     return f"{target_arg}||{name or ''}"
 
 
@@ -263,8 +264,9 @@ def _done_ledger_path(out_dir: str) -> Path:
 
 
 def _load_done_ledger(out_dir: str):
-    """读断点账本，返回 (done_keys:set, latest:dict[key→result])。同一目标可能有多条记录
-    （首轮部署失败 + 补跑），以**最后一条**为准；dict 保持首次出现的顺序。文件不存在/半行损坏都安全降级。"""
+    """Read the resume ledger, returning (done_keys:set, latest:dict[key->result]). The same target may have
+    several records (first-round deploy failure + retry); the **last** one wins; the dict keeps first-seen order.
+    A missing file / a half-written line both degrade safely."""
     path = _done_ledger_path(out_dir)
     done, latest = set(), {}
     if not path.exists():
@@ -274,7 +276,7 @@ def _load_done_ledger(out_dir: str):
         if not line:
             continue
         try:
-            rec = json.loads(line)   # 容忍崩溃时写了半行：解析失败就跳过该行
+            rec = json.loads(line)   # tolerate a half-written line on a crash: skip the line on a parse error
         except json.JSONDecodeError:
             continue
         key = rec.get("_key")
@@ -287,7 +289,7 @@ def _load_done_ledger(out_dir: str):
 
 
 def _append_done_ledger(out_dir: str, key: str, result: dict) -> None:
-    """每完成一个目标立即追加一行并 flush+fsync 落盘——崩溃后账本里已完成的部分不丢。"""
+    """Append one line per completed target and flush+fsync immediately — so the completed part of the ledger is not lost on a crash."""
     path = _done_ledger_path(out_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     rec = {"_key": key, "time": time.strftime("%Y-%m-%d %H:%M:%S"), "result": result}
@@ -301,12 +303,12 @@ def cmd_scan(args) -> int:
     settings = build_settings(args)
     batch_name = getattr(args, "batch_name", None)
     if batch_name:
-        # 批次名：所有结果（每目标子目录 + batch_summary + latest + 断点账本）统一归到 runs/<批次名>/ 下
+        # batch name: all results (per-target subdir + batch_summary + latest + resume ledger) go under runs/<batch name>/
         settings.out_dir = str(Path(settings.out_dir) / slugify(batch_name))
     targets = _resolve_targets(args)
     extra_headers = _parse_headers(args.header)
 
-    # 断点续跑：从账本载入已完成目标，过滤掉，剩余才扫；latest 让最终汇总仍完整
+    # resume: load completed targets from the ledger, filter them out, scan the rest; latest keeps the final summary complete
     resume = bool(getattr(args, "resume", False))
     done_keys, latest = (_load_done_ledger(settings.out_dir) if resume else (set(), {}))
     pending = [(t, n) for (t, n) in targets if _target_key(t, n) not in done_keys]
@@ -314,17 +316,17 @@ def cmd_scan(args) -> int:
 
     _confirm_or_exit(settings, len(pending))
     if resume and skipped:
-        print(f"断点续跑：账本已完成 {skipped} 个，跳过；本次剩余 {len(pending)} 个。")
+        print(f"resume: {skipped} already completed in the ledger, skipped; {len(pending)} remaining this run.")
 
     from calchas.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED)
     console = build_console(settings.format, settings.verbose or 0, bool(settings.quiet))
 
     def scan_one(target_arg, name, attempt):
-        """扫一个目标并落账本。返回 False 表示整批要停（暂停 / fail-fast）。"""
+        """Scan one target and write the ledger. Returns False to stop the whole batch (pause / fail-fast)."""
         label = name or target_arg
         key = _target_key(target_arg, name)
         console.start(label)
-        paused = None   # 置为暂停原因则本目标不计账本、整批停
+        paused = None   # set to a pause reason to not record this target in the ledger and stop the whole batch
         try:
             run_dir, findings = _run_one(target_arg, name, settings, console, extra_headers)
             result = {"target": label, "run_dir": str(run_dir),
@@ -334,7 +336,7 @@ def cmd_scan(args) -> int:
                       "unreached": sum(f.status == UNREACHED for f in findings),
                       "skipped": sum(f.status == SKIPPED for f in findings)}
         except AllModelsUnavailable as e:
-            # 所有大模型都不可用：**暂停**整批（不把当前目标记入账本，恢复后 --resume 从它续跑）。
+            # all LLMs unavailable: **pause** the whole batch (do not record the current target, resume it with --resume after recovery).
             paused = str(e)[:160]
         except GatewayNotReady as e:
             result = {"target": label, "error": str(e)[:300], "deploy_failed": True}
@@ -342,27 +344,28 @@ def cmd_scan(args) -> int:
             result = {"target": label, "error": str(e)[:300]}
         finally:
             console.stop()
-            # 后端已在 scan_target 的 finally 里 disable；此刻清理不会打断任何冷启动
+            # the backend was already disabled in scan_target's finally; cleanup now does not interrupt any cold start
             _run_after_target_cmd(settings, label)
         if paused is not None:
-            print(f"\n⏸  所有大模型均不可用，已暂停检测（{paused}）。")
-            print(f"   当前目标 {label} 未计入账本；模型恢复后用 --resume 从这里续跑即可。")
+            print(f"\n⏸  all LLMs unavailable, detection paused ({paused}).")
+            print(f"   the current target {label} was not recorded in the ledger; after the models recover, resume from here with --resume.")
             return False
-        # 第几次尝试部署（1=首轮，2+=整批跑完后的补跑）：论文据此区分"一次成功/补跑才成功/补跑仍失败"
+        # which deploy attempt (1=first round, 2+=retry after the whole batch): used to distinguish "succeeded first try / succeeded on retry / still failed on retry"
         result["attempt"] = attempt
-        # 账本在收尾（含清理）之后才落：重启续跑时不会漏掉某个目标的清理。崩在这之前→该目标重跑一次（幂等可接受）
+        # the ledger is written only after the finish (incl. cleanup): a restart-resume will not miss a target's cleanup. A crash before this -> that target re-runs once (idempotent, acceptable)
         latest[key] = result
         _append_done_ledger(settings.out_dir, key, result)
         if "error" in result and args.fail_fast:
-            print(f"fail-fast：{label} 失败，中断。已完成的在账本里，可 --resume 续跑。")
+            print(f"fail-fast: {label} failed, aborting. Completed ones are in the ledger, resume with --resume.")
             return False
         return True
 
-    go_on = all(scan_one(t, n, 1) for (t, n) in pending)   # all() 遇 False 即停
+    go_on = all(scan_one(t, n, 1) for (t, n) in pending)   # all() stops on the first False
 
-    # 部署失败补跑：首轮全部跑完后，把"部署失败"的目标再试一轮（与首轮隔开较长时间，
-    # 偶发的下载慢/网关连接抖动多半已过去）。仍失败才算真部署失败。
-    # 依据账本里各目标**最新**一条记录挑选，所以补跑中途崩溃后 --resume 也能接着补。
+    # Deploy-failure retry: after the first round finishes, retry the "deploy-failed" targets one more round
+    # (spaced well apart from the first round, by which time a transient slow download / gateway-connection blip
+    # has mostly passed). Only still-failing ones count as a true deploy failure.
+    # Selection is based on each target's **latest** ledger record, so --resume can continue the retry after a mid-retry crash.
     retry_rounds = max(0, int(getattr(args, "deploy_retry_rounds", 1) or 0))
     for rnd in range(1, retry_rounds + 1):
         if not go_on:
@@ -372,13 +375,13 @@ def cmd_scan(args) -> int:
                 and r.get("deploy_failed") and r.get("attempt", 1) == rnd]
         if not todo:
             break
-        print(f"\n↻ 部署失败补跑（第 {rnd} 轮）：{len(todo)} 个目标")
+        print(f"\n↻ deploy-failure retry (round {rnd}): {len(todo)} targets")
         go_on = all(scan_one(t, n, rnd + 1) for (t, n) in todo)
 
     results = [latest[k] for k in (_target_key(t, n) for (t, n) in targets) if k in latest]
     if len(targets) > 1:
         summary_path = write_batch_summary(Path(settings.out_dir), results)
-        print(f"\n批量汇总已保存：{summary_path}")
+        print(f"\nbatch summary saved: {summary_path}")
     return 0
 
 
@@ -404,7 +407,7 @@ def cmd_report(args) -> int:
     md = render_markdown(catalog, findings)
     if args.out:
         Path(args.out).write_text(md)
-        print(f"已保存：{args.out}")
+        print(f"saved: {args.out}")
     else:
         print(md)
     return 0
@@ -429,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except KeyboardInterrupt:
-        print("\n已中断。", file=sys.stderr)
+        print("\ninterrupted.", file=sys.stderr)
         return 130
 
 
