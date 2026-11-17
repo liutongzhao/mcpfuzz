@@ -32,14 +32,14 @@ def main():
     inferencer = SinkInferencer(use_llm=use_llm, cache_dir=OUT / ".sink_cache")
     results = inferencer.infer(target)
 
-    hot = [r for r in results if r.sinks]
+    hot = [r for r in results if not r.inert and r.provenance]
     for r in hot:
-        tags = ", ".join(f"{s.type}({s.confidence}/{s.source})" for s in r.sinks)
+        tags = ", ".join(f"{c}({r.class_weights.get(c)})" for c in r.provenance)
         print(f"● {r.tool}.{r.param_path}  [{r.param_type}]")
         print(f"    → {tags}")
-        for s in r.sinks:
-            if s.reason:
-                print(f"      · {s.reason}")
+        for c, evs in r.provenance.items():
+            for ev in evs:
+                print(f"      · {c}: {ev}")
 
     total_params = len(results)
     print(f"\nparameters with sink candidates: {len(hot)} / {total_params}")
@@ -49,7 +49,8 @@ def main():
     path = OUT / f"{safe}_sinks.json"
     path.write_text(json.dumps(
         [{"tool": r.tool, "param_path": r.param_path, "param_type": r.param_type,
-          "sinks": [vars(s) for s in r.sinks]} for r in results],
+          "inert": r.inert, "class_weights": r.class_weights, "provenance": r.provenance}
+         for r in results],
         ensure_ascii=False, indent=2))
     print(f"saved: {path}")
 

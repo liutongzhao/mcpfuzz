@@ -72,11 +72,11 @@ def _load_toml(path: str | Path) -> dict:
     with open(path, "rb") as f:
         data = tomllib.load(f)
     flat: dict = {}
-    for v in data.values():
+    for k, v in data.items():
         if isinstance(v, dict):
             flat.update(v)
         else:
-            flat[v] = v
+            flat[k] = v
     return flat
 
 
