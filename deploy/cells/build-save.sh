@@ -16,10 +16,10 @@ echo "==> 构建镜像 (platform=linux/amd64, tag=$TAG)"
 IMAGE_TAG="$TAG" docker compose -f docker-compose.yml -f docker-compose.build.yml build
 
 if [ "$ONLY" = "runner" ]; then
-  IMAGES="mcpfuzz-runner:$TAG"
+  IMAGES="calchas-runner:$TAG"
   OUT="mcpcells-runner-$TAG.tar.gz"
 else
-  IMAGES="mcpfuzz-runner:$TAG mcpfuzz-gateway:$TAG mcpfuzz-oob:$TAG"
+  IMAGES="calchas-runner:$TAG calchas-gateway:$TAG calchas-oob:$TAG"
   OUT="mcpcells-images-$TAG.tar.gz"
 fi
 

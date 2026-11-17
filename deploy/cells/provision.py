@@ -9,7 +9,7 @@
   2. 首次运行时清空网关已有后端，保证本 cell 只含这一批（restart 续跑时不重清）。
   3. 每条 name 消毒成网关合法后端名。
   4. 【不预先注册后端】——扫描器用 --gateway-launch-map 按 namemap 里的 launch 逐个临时注册、扫完删除。
-  5. 写 targets.txt（每行 /mcp/{后端名}，给 mcpfuzz --batch 用）、namemap.json（后端名→原始身份+launch+期望工具）。
+  5. 写 targets.txt（每行 /mcp/{后端名}，给 calchas --batch 用）、namemap.json（后端名→原始身份+launch+期望工具）。
   6. 尽力铸一把 bearer key 写到 bearer.txt（给 MCP 端点鉴权用）；铸不出则回退登录 JWT。
 
 幂等：targets.txt 已存在且非空时跳过灌清单（容器 restart 续跑时不重复灌）。纯标准库。
@@ -122,7 +122,7 @@ def main():
     ap.add_argument("--gateway", required=True, help="网关基址，如 http://gateway:3000")
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default="admin123")
-    ap.add_argument("--targets-out", required=True, help="输出 targets.txt（给 mcpfuzz --batch）")
+    ap.add_argument("--targets-out", required=True, help="输出 targets.txt（给 calchas --batch）")
     ap.add_argument("--map-out", required=True, help="输出 namemap.json（后端名→原始身份）")
     ap.add_argument("--bearer-out", default=None, help="输出 bearer.txt（给 MCP 端点鉴权）")
     ap.add_argument("--no-reset", action="store_true", help="不清空网关已有后端")
@@ -167,7 +167,7 @@ def main():
     # 清单 → 后端名 + 启动命令表。【不预先注册任何后端】：
     # mcphub 一注册就会启动该后端，一次注册几十上百个会把网关压垮；而「刚注册还在启动就 disable」
     # 又会触发 mcphub 内部 Connection closed 使网关进程崩溃（2026-11-10 实测）。所以改为扫描时由
-    # 扫描器按 namemap 里的 launch 临时注册当前这一个、扫完删除（mcpfuzz --gateway-launch-map）。
+    # 扫描器按 namemap 里的 launch 临时注册当前这一个、扫完删除（calchas --gateway-launch-map）。
     used, mapping = set(), {}
     for d in entries:
         gw = sanitize(d["name"], used)

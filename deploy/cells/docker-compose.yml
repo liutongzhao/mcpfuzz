@@ -6,16 +6,16 @@
 # 本地打镜像用 docker-compose.build.yml 叠加（见 build-save.sh）。
 #
 # 镜像(自包含，含扫描器源码 + llm_config)：
-#   mcpfuzz-runner / mcpfuzz-gateway / mcpfuzz-oob，tag 由 IMAGE_TAG 控制（默认 latest）。
+#   calchas-runner / calchas-gateway / calchas-oob，tag 由 IMAGE_TAG 控制（默认 latest）。
 
 services:
   oob:
-    image: mcpfuzz-oob:${IMAGE_TAG:-latest}
+    image: calchas-oob:${IMAGE_TAG:-latest}
     restart: unless-stopped
     mem_limit: 512m
 
   gateway:
-    image: mcpfuzz-gateway:${IMAGE_TAG:-latest}
+    image: calchas-gateway:${IMAGE_TAG:-latest}
     restart: unless-stopped   # 被注入载荷打挂 → 自动拉回（runner 靠 --resume 续跑）
     # 内存上限：网关现场用 npx/uvx 拉起的个别目标子进程会内存失控（泄漏/加载大数据），
     # 一个就能吃十几 G 撑爆宿主。设上限 → 失控时由容器自身 cgroup OOM 杀掉该子进程，
@@ -33,7 +33,7 @@ services:
     # 不对外暴露端口（多 cell 同机会冲突）；要看面板临时加：ports: ["3000:3000"]
 
   runner:
-    image: mcpfuzz-runner:${IMAGE_TAG:-latest}
+    image: calchas-runner:${IMAGE_TAG:-latest}
     mem_limit: 1g   # 扫描器本体很轻（<100M），上限只为兜底防失控
     depends_on:
       - gateway

@@ -54,4 +54,4 @@ if [ -n "${TOOL_TIMEOUT:-}" ]; then
   set -- "$@" --tool-timeout "$TOOL_TIMEOUT"
 fi
 
-exec python3 -m mcpfuzz.cli.main "$@"
+exec python3 -m calchas.cli.main "$@"

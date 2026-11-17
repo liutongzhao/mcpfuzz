@@ -11,7 +11,7 @@
 |---|---|
 | `gateway` | 自己的 mcphub 网关（mcphub + node/npx + uv/uvx）。按本批清单把目标当 stdio 后端拉起 |
 | `oob` | 带外回连采集器。命令注入/SSRF 的确认通道，走 cell 内网 `http://oob:9100` |
-| `runner` | mcpfuzz 扫描器 + `provision.py`（源码已烤进镜像）。先灌清单进网关，再 `mcpfuzz scan --batch` 挨个扫 |
+| `runner` | calchas 扫描器 + `provision.py`（源码已烤进镜像）。先灌清单进网关，再 `calchas scan --batch` 挨个扫 |
 
 三者同处本 cell 的隔离网络，靠 `-p <批次名>` 区分，彼此不串台。
 
@@ -96,7 +96,7 @@ BATCH=batch-001 docker compose -p batch-001 down -v   # 收工清理本 cell（d
 ```
 ① 起 3 个容器：gateway(mcphub) + oob + runner
 ② runner 等网关就绪 → 登录 → 把 batch-001.jsonl 整批清单灌进网关（provision.py）
-③ 挨个目标循环（mcpfuzz scan --batch）：
+③ 挨个目标循环（calchas scan --batch）：
       enable  → 网关现场 npx/uvx 拉起这个 MCP（首次联网装包）
       等就绪  → connected 且 tools>0 才算起来
         ├ 起来了   → 推 sink → 发载荷 → 判定 → 写 findings/report
