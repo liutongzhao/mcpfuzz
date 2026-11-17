@@ -13,7 +13,7 @@ import asyncio
 import re
 import time
 
-from calchas.__about__ import MARKER
+from calchas.__about__ import MARKER, TOKEN_PREFIX
 from calchas.driver import call_on
 from calchas.sink.types import AI, CODE, PT, SSRF, W_MED
 
@@ -482,7 +482,7 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     # "真对路径做文件操作"与"把输入回显进响应"→ 在非路径参数(数字/日期/key)与修复版上大面积误报。
     # 改为【存在性敏感】：工具对「真实存在的越界目标」与「确定不存在的越界目标」反应不同（去掉回显路径串
     # 后"模板"仍异）→ 才证明工具真去访问了越界文件系统、而非回显。探针用 /dev/null、/tmp(存在/可写父)
-    # 对比 /mcpf..._nx/d/x(父目录都不存在)，均无破坏性。门控：只对 sink 标为高权重 PT(≥W_MED)的参数跑，
+    # 对比 /<prefix>..._nx/d/x(父目录都不存在)，均无破坏性。门控：只对 sink 标为高权重 PT(≥W_MED)的参数跑，
     # 滤掉数字/日期/枚举等非路径参数。安全性：修复版对越界先围栏→存在/不存在都被拒成同一"blocked/规范化"
     # 模板→存在性不敏感→不触发（负样本天然安全）。
     pt_weight = getattr(prior, "class_weights", {}).get(PT, 0.0) if prior else 0.0
@@ -492,8 +492,8 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
         tk = secrets.token_hex(4)
         # 可达(存在/父目录存在)目标 vs 不可达(父目录都不存在)目标，各给 绝对+遍历 形态
         reach = ["/dev/null", "../../../../../../dev/null",
-                 f"/tmp/mcpf{tk}_r", f"../../../../../../tmp/mcpf{tk}_r"]
-        nxs = [f"/mcpf{tk}_nx/d/x", f"../../../../../../mcpf{tk}_nx/d/x"]
+                 f"/tmp/{TOKEN_PREFIX}{tk}_r", f"../../../../../../tmp/{TOKEN_PREFIX}{tk}_r"]
+        nxs = [f"/{TOKEN_PREFIX}{tk}_nx/d/x", f"../../../../../../{TOKEN_PREFIX}{tk}_nx/d/x"]
         allp = reach + nxs
 
         async def _call_path(v):

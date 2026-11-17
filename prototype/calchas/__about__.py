@@ -12,3 +12,6 @@ CLI_NAME = "calchas"
 # (temp-file prefixes, key-position injection fillers). Not user-facing branding;
 # kept centralized so a rebrand stays a one-line change.
 MARKER = "calchas"
+# Prefix for the random canary token minted per probe (embedded in payloads and
+# matched in responses/logs). Any unique, URL/shell-safe string works.
+TOKEN_PREFIX = "clx"

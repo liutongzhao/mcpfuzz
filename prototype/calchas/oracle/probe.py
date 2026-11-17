@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import secrets
 import time
+
+from calchas.__about__ import TOKEN_PREFIX
 from dataclasses import dataclass, field
 
 
 def mint_token() -> str:
     """生成唯一、不可能自然出现、URL/shell 安全、可在文本中匹配的 token。"""
-    return "mcpf" + secrets.token_hex(5)
+    return TOKEN_PREFIX + secrets.token_hex(5)
 
 
 @dataclass

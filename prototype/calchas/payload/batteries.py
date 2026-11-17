@@ -63,11 +63,11 @@ def _ai_battery() -> list[dict]:
     # reflection_safe=False：token 就在选项名里，被原样回显也会出现 → 命中须有 "unknown option"
     # 类错误指纹佐证（证明被 argv 解析器当选项拒绝）才算确认，否则仅弱证据，避免输入回显误报。
     out = [
-        {"value": "--mcpf{TOKEN}", "channel": "inband", "expect": None, "control": None,
+        {"value": "--{TOKEN}", "channel": "inband", "expect": None, "control": None,
          "delay_target": 0.0, "technique": "ai:unknown-long", "reflection_safe": False},
-        {"value": "--mcpf{TOKEN}=1", "channel": "inband", "expect": None, "control": None,
+        {"value": "--{TOKEN}=1", "channel": "inband", "expect": None, "control": None,
          "delay_target": 0.0, "technique": "ai:unknown-long-eq", "reflection_safe": False},
-        {"value": "-mcpf{TOKEN}", "channel": "inband", "expect": None, "control": None,
+        {"value": "-{TOKEN}", "channel": "inband", "expect": None, "control": None,
          "delay_target": 0.0, "technique": "ai:unknown-short", "reflection_safe": False},
     ]
     for opt in ("--version", "-V", "--help", "-h", "--usage"):
@@ -121,7 +121,7 @@ _PT_KEY = [
     "../../../../.ssh/id_rsa",
 ]
 # 写型路径穿越（无内容回显）：越界路径（遍历 + 绝对），{TOKEN} 作唯一 canary 名。
-# {TOKEN} 本身已带 "mcpf" 前缀，故路径不再自己加（原 "/tmp/mcpf{TOKEN}" 会叠成 mcpfmcpf）。
+# {TOKEN} 本身已带前缀，故路径不再自己加（否则会叠成双前缀）。
 # 判定在 executor：fail-closed——写后用读回器读该唯一落地路径，读到内容=真落到越界处=confirmed；
 # 读不到（被围栏拦/无读回器）→ 不产结论。不再解析服务端“拒绝措辞”。
 _PT_CONFINE = [
