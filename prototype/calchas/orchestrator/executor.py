@@ -602,13 +602,14 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
 
 
 async def _confirm_timing(session, target, args, p, baseline, rounds=2) -> bool:
-    """Retest debounce: run `rounds` more times, take the median extra delay, and only confirm if it is still >= target*0.6."""
+    """Retest debounce: run `rounds` more times and require EVERY retest's extra delay to still be >= target*0.6
+    (take the min), so a single jitter spike cannot confirm — together with the initial hit this means all probes
+    were slow (fail-closed, fewest timing false positives)."""
     adds = []
     for _ in range(rounds):
         res, lat = await _timed_call(session, target, args)
         adds.append(lat - baseline)
-    adds.sort()
-    return adds[len(adds) // 2] >= p.delay_target * 0.6
+    return bool(adds) and min(adds) >= p.delay_target * 0.6
 
 
 def _strip_paths(s, paths):

@@ -159,10 +159,13 @@ def _build_plan_from_calls(target_name, calls, target_tool) -> Plan:
     steps.append(Step(len(steps) + 1, target_name,
                       {k: _arg_spec(k, v, prior_results) for k, v in targs.items()}))
 
-    reachable = bool(tgt_ok)
-    note = (f"agent reached the target ({len(pre)} prerequisite steps)" if reachable
+    target_confirmed = bool(tgt_ok)   # whether the agent actually got the target to call through (for the note only, NOT Plan.reachable)
+    note = (f"agent reached the target ({len(pre)} prerequisite steps)" if target_confirmed
             else f"agent did not confirm the target was callable, best-effort replay ({len(pre)} prerequisite steps)")
-    return Plan(steps=steps, reachable=True, note=note)   # optimistic replay; real reachability is judged by executor's baseline
+    # Always optimistic replay: return reachable=True even when the agent could not confirm the target, so the
+    # executor opens a session and judges real reachability from its own baseline. Returning reachable=False here
+    # would make run_tool SKIP the tool without even trying, hurting recall on best-effort plans that still work.
+    return Plan(steps=steps, reachable=True, note=note)
 
 
 def _is_provider_down(err) -> bool:

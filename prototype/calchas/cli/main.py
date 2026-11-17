@@ -318,7 +318,7 @@ def cmd_scan(args) -> int:
     if resume and skipped:
         print(f"resume: {skipped} already completed in the ledger, skipped; {len(pending)} remaining this run.")
 
-    from calchas.orchestrator import (CONFIRMED, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED)
+    from calchas.orchestrator import (CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED)
     console = build_console(settings.format, settings.verbose or 0, bool(settings.quiet))
 
     def scan_one(target_arg, name, attempt):
@@ -329,12 +329,14 @@ def cmd_scan(args) -> int:
         paused = None   # set to a pause reason to not record this target in the ledger and stop the whole batch
         try:
             run_dir, findings = _run_one(target_arg, name, settings, console, extra_headers)
+            # exclude DoS/availability findings from the per-param five-state counts, matching report.md / run.end
+            params = [f for f in findings if f.sink != DOS]
             result = {"target": label, "run_dir": str(run_dir),
-                      "confirmed": sum(f.status == CONFIRMED for f in findings),
-                      "suspected": sum(f.status == SUSPECTED for f in findings),
-                      "clean": sum(f.status == LIKELY_CLEAN for f in findings),
-                      "unreached": sum(f.status == UNREACHED for f in findings),
-                      "skipped": sum(f.status == SKIPPED for f in findings)}
+                      "confirmed": sum(f.status == CONFIRMED for f in params),
+                      "suspected": sum(f.status == SUSPECTED for f in params),
+                      "clean": sum(f.status == LIKELY_CLEAN for f in params),
+                      "unreached": sum(f.status == UNREACHED for f in params),
+                      "skipped": sum(f.status == SKIPPED for f in params)}
         except AllModelsUnavailable as e:
             # all LLMs unavailable: **pause** the whole batch (do not record the current target, resume it with --resume after recovery).
             paused = str(e)[:160]

@@ -124,6 +124,8 @@ def _enforce(param, v):
             cand = k * mult
             if lo_ok is not None and cand < lo_ok:   # after aligning to the multiple, don't fall below the lower bound
                 cand = (int(lo_ok / mult) + 1) * mult
+            if hi_ok is not None and cand > hi_ok:   # and don't exceed the upper bound: step down to the largest multiple <= hi_ok
+                cand = int(hi_ok / mult) * mult      # (if this then drops below lo_ok, the schema admits no valid value — best-effort)
             v = cand
         if param.type == "integer":
             v = int(v)
