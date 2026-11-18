@@ -1,0 +1,51 @@
+# 实验网关扩展镜像：在基础镜像 calchas-gateway:latest 上补齐环境依赖型被测 MCP 所需的运行时，
+# 全部固化进镜像，重建容器不丢：
+#  - Chromium：pptr-mcp（puppeteer 需浏览器，代码注入 sink 才可达）
+#  - docker CLI：node-code-sandbox-mcp（命令注入打宿主 docker；运行时挂载宿主 /var/run/docker.sock）
+#  - Jij-MCP-Server 源码(锁 5617dba) + venv
+#  - mcp-vegalite-server 源码(锁 16aefed) + venv（不用 uvx --from git+：每次启动都连 GitHub，国内常超时）
+#  - knowns 全局命令 kn
+#
+# 构建（在本目录）：docker compose build
+#   前提1：基础镜像 calchas-gateway:latest 已存在（由 deploy/cells/images/gateway 构建）
+#   前提2：本目录有 .uv-seed/（uv 缓存种子，可为空目录；有内容则 Python 依赖基本不走外网）。
+#          从运行中的网关导出：docker cp calchas-gateway:/root/.cache/uv .uv-seed
+FROM calchas-gateway:latest
+USER root
+
+# 换国内 Debian 源(清华)，官方源从国内拉 chromium(91M) 会卡死
+RUN set -e; \
+    for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+      [ -f "$f" ] && sed -i 's|http://deb.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g; s|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|g; s|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' "$f" || true; \
+    done
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends chromium docker-cli ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PUPPETEER_SKIP_DOWNLOAD=true \
+    CHROME_PATH=/usr/bin/chromium
+
+# 预置 Jij 源码并锁定到漏洞版 commit
+RUN for i in 1 2 3 4 5; do git clone https://github.com/Jij-Inc/Jij-MCP-Server /tmp/jij && break || { echo retry $i; rm -rf /tmp/jij; sleep 5; }; done \
+ && git -C /tmp/jij checkout 5617dba
+# 预置 vegalite 源码并锁定漏洞版 commit
+RUN for i in 1 2 3 4 5; do git clone https://github.com/isaacwasserman/mcp-vegalite-server /tmp/vega-src && break || { echo retry $i; rm -rf /tmp/vega-src; sleep 5; }; done \
+ && git -C /tmp/vega-src checkout 16aefed
+RUN mkdir -p /tmp/vega/logs
+
+# 建 Jij / vegalite 的 venv：.uv-seed 以可写 bind 挂进来当 uv 缓存（写入不进镜像层），
+# UV_LINK_MODE=copy 让 venv 自包含、不依赖缓存目录；缺的包走国内源
+ARG UV_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN --mount=type=bind,source=.uv-seed,target=/uv-seed,rw \
+    export UV_CACHE_DIR=/uv-seed UV_LINK_MODE=copy UV_DEFAULT_INDEX=$UV_INDEX \
+           UV_PYTHON=/usr/local/bin/python3 UV_PYTHON_DOWNLOADS=never \
+ && cd /tmp/jij && uv sync --frozen \
+ && cd /tmp/vega-src && uv venv .venv && uv pip install --python .venv/bin/python . "mcp<2" \
+ && cd /tmp/vega && /tmp/vega-src/.venv/bin/python -c "import mcp_server_vegalite" \
+ && /tmp/jij/.venv/bin/python -c "import jijmodeling"
+
+# knowns 全局命令 kn（gt_knowns 正样本版本）
+ARG NPM_REGISTRY=https://mirrors.huaweicloud.com/repository/npm/
+RUN npm install -g --registry=$NPM_REGISTRY knowns@0.29.1 && kn --version

@@ -5,9 +5,10 @@ name: calchas-gateway
 
 services:
   gateway:
-    image: calchas-gateway:latest
+    image: calchas-gateway:ext   # 扩展镜像：基础网关 + Chromium/docker CLI/Jij/vegalite/knowns，见 Dockerfile.ext
     build:
-      context: ../../cells/images/gateway   # 复用 mcphub + node/npx + uv/uvx + curl/git 的镜像定义
+      context: .                 # 只构建扩展层；基础镜像 calchas-gateway:latest 需先由 deploy/cells/images/gateway 构建好
+      dockerfile: Dockerfile.ext
     container_name: calchas-gateway
     restart: unless-stopped                  # 被注入载荷打挂时自动拉回
     mem_limit: 3g
@@ -15,10 +16,15 @@ services:
       ADMIN_PASSWORD: ${GATEWAY_PASSWORD:?set GATEWAY_PASSWORD in .env}
       npm_config_registry: ${NPM_REGISTRY:-https://registry.npmjs.org/}
       UV_DEFAULT_INDEX: ${UV_INDEX:-https://pypi.org/simple}
+      # better-sqlite3 的预编译原生文件默认从 GitHub 下载，国内常失败致 MCP 启动报 "Could not locate the bindings file"
+      npm_config_better_sqlite3_binary_host_mirror: ${BETTER_SQLITE3_MIRROR:-https://registry.npmmirror.com/-/binary/better-sqlite3}
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-3000}:3000"   # 只绑本机，不对外
     volumes:
       - ./data:/app/data                     # mcp_settings.json 等网关配置持久化到宿主机
+      - ./cache/npm:/root/.npm               # npx 包缓存落宿主机：重建容器不丢，被测服务不必每次重下
+      - ./cache/uv:/root/.cache/uv           # uvx 包缓存同上
+      - /var/run/docker.sock:/var/run/docker.sock   # 给 node-code-sandbox-mcp 用：容器内 docker 直通宿主(=宿主root权限，仅实验机)
     networks:
       - calchas-net
 
