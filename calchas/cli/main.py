@@ -19,7 +19,7 @@ from pathlib import Path
 
 from calchas.__about__ import CLI_NAME, __version__
 from calchas.config import Settings, build_settings
-from calchas.report import render_markdown
+from calchas.report import render_markdown, render_summary
 from calchas.llm_failover import AllModelsUnavailable
 from calchas.run import (GatewayNotReady, make_run_dir, read_batch_file, scan_target, slugify,
                          write_batch_summary)
@@ -165,6 +165,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("catalog_path", help="the same run's catalog.json path")
     p_report.add_argument("-o", "--out", default=None, metavar="FILE", help="output path (default print to terminal)")
     p_report.set_defaults(func=cmd_report)
+
+    p_summary = sub.add_parser("summary", help="aggregate many runs' findings.json into one cross-MCP overview")
+    p_summary.add_argument("root", help="a directory to search recursively for */findings.json (e.g. runs/ or a batch output dir)")
+    p_summary.add_argument("-o", "--out", default=None, metavar="FILE", help="output path (default print to terminal)")
+    p_summary.set_defaults(func=cmd_summary)
 
     p_self = sub.add_parser("selftest", help="offline payload-synthesis self-check (sends nothing)")
     p_self.set_defaults(func=cmd_selftest)
@@ -457,6 +462,42 @@ def cmd_report(args) -> int:
     if args.out:
         Path(args.out).write_text(md)
         print(f"saved: {args.out}")
+    else:
+        print(md)
+    return 0
+
+
+def cmd_summary(args) -> int:
+    """Aggregate every run under `root` (each a dir holding findings.json + catalog.json) into one cross-MCP
+    overview. Generic: reads only the standard run artifacts, nothing server-specific."""
+    from calchas.orchestrator.types import Finding
+
+    root = Path(args.root)
+    servers = []
+    for fp in sorted(root.rglob("findings.json")):
+        run_dir = fp.parent
+        try:
+            findings = [Finding(**f) for f in json.loads(fp.read_text())]
+        except Exception as e:   # noqa: BLE001
+            print(f"skip {fp}: {e}")
+            continue
+        name = version = url = None
+        cat = run_dir / "catalog.json"
+        if cat.exists():
+            try:
+                c = json.loads(cat.read_text())
+                name, version, url = c.get("server_name"), c.get("server_version"), c.get("url")
+            except Exception:   # noqa: BLE001
+                pass
+        servers.append({"name": name or run_dir.name, "version": version, "url": url, "findings": findings})
+
+    if not servers:
+        print(f"no findings.json found under {root}")
+        return 1
+    md = render_summary(servers)
+    if args.out:
+        Path(args.out).write_text(md)
+        print(f"saved: {args.out}  ({len(servers)} MCP servers aggregated)")
     else:
         print(md)
     return 0
