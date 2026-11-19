@@ -68,11 +68,12 @@ WHL="dist/mcp_calchas-$VERSION-py3-none-any.whl"
 # ---- 4. check ----------------------------------------------------------------
 step "check metadata and contents"
 "$PY" -m twine check dist/*
-bad="$("$PY" -m zipfile -l "$WHL" | awk 'NR>1{print $1}' | grep -vE '^(calchas/.*\.py|mcp_calchas-[^/]+\.dist-info/.*)$' || true)"
+# Allow: python source, the declared package-data (sink/keyword_lexicon.json), and metadata — nothing else.
+bad="$("$PY" -m zipfile -l "$WHL" | awk 'NR>1{print $1}' | grep -vE '^(calchas/.*\.py|calchas/sink/keyword_lexicon\.json|mcp_calchas-[^/]+\.dist-info/.*)$' || true)"
 [ -z "$bad" ] || die "unexpected files in wheel:\n$bad"
 leak="$(unzip -p "$WHL" 'calchas/*' | grep -aEn 'sk-[A-Za-z0-9._-]{20,}|mcphub_[A-Za-z0-9]{16,}' || true)"
 [ -z "$leak" ] || die "possible secret in wheel:\n$leak"
-echo "wheel contains only calchas/*.py and metadata; no secrets found"
+echo "wheel contains only calchas/*.py, the sink keyword lexicon, and metadata; no secrets found"
 
 # ---- 5. test install in a fresh venv ----------------------------------------
 step "test install in a fresh venv"
