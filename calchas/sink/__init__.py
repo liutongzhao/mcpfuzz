@@ -1,7 +1,8 @@
-"""Sink inference: structural pre-filter + floor-and-raise (rule union + LLM primary), emitting a per-parameter soft prior over classes."""
+"""Sink inference: structural pre-filter + one deterministic multi-label classifier (LLM or keyword),
+emitting the injection classes each parameter is tested for."""
 from .core import SinkInferencer, is_inert
-from .types import (CI, AI, PT, SSRF, QI, CODE, FLOOR, PHASE1_CLASSES, SINK_TYPES,
-                    ParamSinkPrior, Raise)
+from .types import (CI, AI, PT, SSRF, QI, CODE, PHASE1_CLASSES, OPERATIONS, SINK_TYPES,
+                    ParamSinkPrior, operations_to_classes)
 
-__all__ = ["SinkInferencer", "is_inert", "ParamSinkPrior", "Raise", "SINK_TYPES",
-           "PHASE1_CLASSES", "FLOOR", "CI", "AI", "PT", "SSRF", "QI", "CODE"]
+__all__ = ["SinkInferencer", "is_inert", "ParamSinkPrior", "operations_to_classes", "SINK_TYPES",
+           "PHASE1_CLASSES", "OPERATIONS", "CI", "AI", "PT", "SSRF", "QI", "CODE"]

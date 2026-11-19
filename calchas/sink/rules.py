@@ -1,47 +1,65 @@
-"""Rule layer: propose "raise" candidates from parameter name/description (generic keyword
-heuristics, not targeted at any specific server).
+"""Keyword classifier (the non-LLM arm of stage 1, selected when --no-llm-sink).
 
-Its role is a deterministic recall floor under the LLM — even if the LLM misses a label, a rule
-hit will lift the corresponding class up off the floor. Combined with the LLM layer by union (max).
-Only proposes candidates for injectable (string-like / array-of-string) parameters.
+Classifies a parameter purely by matching its NAME against a per-operation keyword lexicon that was
+induced from CVEs (see dataset/keyword_lexicon.py; file: keyword_lexicon.json). Deterministic, no
+weights: a parameter is classified into an operation iff its name matches a word in that operation's list.
+
+Name only (not the description): the lexicon contains generic words that would match almost every
+description, inflating keyword recall; matching the parameter name keeps the baseline meaningful.
 """
 from __future__ import annotations
 
+import json
 import re
+from functools import lru_cache
+from pathlib import Path
 
-from .types import AI, CI, CODE, PT, QI, SSRF, W_LOW, W_MED, Raise
+from .types import OPERATIONS
 
-# (keyword regex, injection class). Hit on the parameter name -> medium evidence (W_MED);
-# hit on the description only -> weak evidence (W_LOW).
-RULES = [
-    (r"\b(path|file|dir|folder|filename|filepath|location|dest|destination|output|input)\b", PT),
-    (r"\b(url|uri|urls|href|endpoint|host|hostname|webhook|callback|link|address|server|proxy|upstream|"
-     r"target|source|src|site|page|domain|remote|feed|resource|origin|image|img|avatar|favicon|"
-     r"icon|thumbnail|screenshot|fetch|download|request|scrape|crawl|preview)\b", SSRF),
-    (r"\b(cmd|command|exec|shell|bash|script|run)\b", CI),
-    (r"\b(ref|arg|args|argument|flag|flags|option|options)\b", AI),
-    (r"\b(query|sql|filter|search|statement|where|cypher|kql|dql|graphql)\b", QI),
-    (r"\b(code|expr|expression|eval|template|formula)\b", CODE),
-]
+_LEXICON_FILE = Path(__file__).resolve().parent / "keyword_lexicon.json"
 
 
-def _normalize(s: str) -> str:
-    """Split snake_case/kebab/dotted-path/camelCase into space-separated words; otherwise the \\b word
-    boundary does not break at underscores, so compound names like image_url / file_path / targetUrl would
-    match no keyword at all (a general recall hole)."""
-    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", s)   # camelCase -> space
-    s = re.sub(r"[_\-./]+", " ", s)                  # underscore / hyphen / dot / slash -> space
-    return s.lower()
+@lru_cache(maxsize=1)
+def _lexicon() -> dict[str, set]:
+    """Load {operation: set(words)} from the induced lexicon. Empty sets if the file is missing."""
+    out = {op: set() for op in OPERATIONS}
+    try:
+        data = json.loads(_LEXICON_FILE.read_text())
+    except Exception:
+        return out
+    for op, spec in data.get("classes", {}).items():
+        if op in out:
+            out[op] = {e["word"].lower() for e in spec.get("words", [])}
+    return out
 
 
-def rule_raises(param) -> list[Raise]:
-    """Return the rule-raise list for this parameter (at most one per class, keeping the strongest)."""
-    name = _normalize(param.path or "")
-    desc = _normalize(param.description or "")
-    best: dict[str, Raise] = {}
-    for pat, cls in RULES:
-        if re.search(pat, name):
-            best[cls] = Raise(cls, W_MED, "rule", f"parameter name matched {cls} keyword")
-        elif re.search(pat, desc) and cls not in best:
-            best[cls] = Raise(cls, W_LOW, "rule", f"description matched {cls} keyword")
-    return list(best.values())
+def _leaf(path: str) -> str:
+    """Last segment of a (possibly nested) parameter path: files[].path -> path, config.timeout -> timeout."""
+    seg = re.split(r"[.\[]", path or "")[-1]
+    return seg.strip("]")
+
+
+def _candidates(name: str) -> set[str]:
+    """Match forms for a parameter name: the whole name, a separator-normalized form, and word tokens."""
+    low = name.lower()
+    # split camelCase, then unify separators to underscore
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    norm = re.sub(r"[\-./ ]+", "_", spaced).lower().strip("_")
+    cands = {low, norm}
+    cands.update(t for t in norm.split("_") if t)
+    return {c for c in cands if c}
+
+
+def keyword_operations(param) -> tuple[set[str], dict[str, list]]:
+    """Return (operations, provenance) for this parameter by name-matching the lexicon.
+    provenance maps each hit operation to the list of matched keywords."""
+    lex = _lexicon()
+    cands = _candidates(_leaf(param.path or ""))
+    ops: set[str] = set()
+    prov: dict[str, list] = {}
+    for op, words in lex.items():
+        hit = sorted(cands & words)
+        if hit:
+            ops.add(op)
+            prov[op] = [f"name matched keyword '{w}'" for w in hit]
+    return ops, prov

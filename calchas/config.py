@@ -52,6 +52,9 @@ class Settings:
     format: str = "auto"       # auto|rich|plain|json (auto: rich on a TTY, else plain)
     verbose: int = 0
     quiet: bool = False
+    # stop right after stage 1 (sink inference): write catalog.json + sinks.json, run no stage 2/3, send no payload.
+    # For the stage-1 classification ablation (keyword vs LLM); needs no OOB and no network beyond listing tools.
+    stage1_only: bool = False
     # safety / ethics
     dry_run: bool = False
     assume_yes: bool = False

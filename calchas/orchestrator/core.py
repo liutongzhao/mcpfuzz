@@ -134,7 +134,7 @@ class Orchestrator:
         for ps in param_sinks:
             if only_tools and ps.tool not in only_tools:
                 continue
-            if not getattr(ps, "inert", False) and ps.class_weights:
+            if not getattr(ps, "inert", False) and ps.classes:
                 by_tool.setdefault(ps.tool, []).append(ps)
         return self._run_all(by_tool, dry_run)
 

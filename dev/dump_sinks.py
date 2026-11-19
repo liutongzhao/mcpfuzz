@@ -27,16 +27,17 @@ def main():
     print(f"connecting {url} ..." + (" (with auth header)" if headers else ""))
     target = fetch_catalog_sync(url, headers)
     print(f"server: {target.server_name} {target.server_version}  tools: {len(target.tools)}")
-    print(f"inference: {'rules + LLM' if use_llm else 'rules only'}\n")
+    print(f"inference: {'LLM (semantic)' if use_llm else 'keyword lexicon'}\n")
 
     inferencer = SinkInferencer(use_llm=use_llm, cache_dir=OUT / ".sink_cache")
     results = inferencer.infer(target)
 
-    hot = [r for r in results if not r.inert and r.provenance]
+    hot = [r for r in results if not r.inert and r.classes]
     for r in hot:
-        tags = ", ".join(f"{c}({r.class_weights.get(c)})" for c in r.provenance)
+        tags = ", ".join(r.classes)
+        ops = ", ".join(getattr(r, "operations", []))
         print(f"● {r.tool}.{r.param_path}  [{r.param_type}]")
-        print(f"    → {tags}")
+        print(f"    → {tags}   (ops: {ops})")
         for c, evs in r.provenance.items():
             for ev in evs:
                 print(f"      · {c}: {ev}")
@@ -49,7 +50,8 @@ def main():
     path = OUT / f"{safe}_sinks.json"
     path.write_text(json.dumps(
         [{"tool": r.tool, "param_path": r.param_path, "param_type": r.param_type,
-          "inert": r.inert, "class_weights": r.class_weights, "provenance": r.provenance}
+          "inert": r.inert, "classes": list(r.classes), "operations": list(getattr(r, "operations", [])),
+          "provenance": r.provenance}
          for r in results],
         ensure_ascii=False, indent=2))
     print(f"saved: {path}")

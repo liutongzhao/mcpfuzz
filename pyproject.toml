@@ -55,3 +55,7 @@ include = ["calchas*"]
 # Payload word lists (dicts/, _raw/) are reference material only and are never loaded at runtime.
 [tool.setuptools]
 include-package-data = false
+
+# The keyword lexicon IS loaded at runtime (keyword classifier), so it must ship in the wheel.
+[tool.setuptools.package-data]
+"calchas.sink" = ["keyword_lexicon.json"]

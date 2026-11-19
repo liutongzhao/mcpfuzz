@@ -142,6 +142,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="deploy-failure retry rounds: after the whole batch finishes, retry deploy-failed (backend won't start / can't connect) targets N more rounds (default 1; 0 to disable)")
     p_scan.add_argument("--dry-run", action="store_true", default=None,
                         help="equivalent to recon: only preview the attack surface, send no payload")
+    p_scan.add_argument("--stage1-only", dest="stage1_only", action="store_true", default=None,
+                        help="stop right after stage 1 (sink classification): write catalog.json + sinks.json, "
+                             "run no stage 2/3, send no payload (for the stage-1 keyword-vs-LLM ablation)")
     _add_common_scan_args(p_scan)
     p_scan.set_defaults(func=cmd_scan)
 
@@ -227,7 +230,8 @@ def _configure_llm(settings: Settings) -> None:
 
 def _require_llm_or_exit(settings: Settings) -> None:
     """If any LLM-backed feature is on but no provider resolved, exit with a clear, actionable message."""
-    needs_llm = settings.llm_sink or settings.llm_plan or settings.sequence_agent
+    # stage1_only runs no stage 2/3, so the plan/agent LLM is irrelevant; only the sink LLM matters.
+    needs_llm = settings.llm_sink if settings.stage1_only else (settings.llm_sink or settings.llm_plan or settings.sequence_agent)
     from calchas import llm_config
     if needs_llm and not shutil.which("curl"):
         sys.exit("LLM features need the `curl` executable on PATH (used for chat-completion calls). Install curl,\n"
@@ -239,7 +243,7 @@ def _require_llm_or_exit(settings: Settings) -> None:
 
 
 def _confirm_or_exit(settings: Settings, n_targets: int) -> None:
-    if settings.dry_run or settings.assume_yes:
+    if settings.dry_run or settings.stage1_only or settings.assume_yes:
         return
     msg = (f"about to launch a side-effecting scan against {n_targets} target(s) (command/path/SSRF payloads, incl. out-of-band callbacks and file writes)."
           f" Continue? [y/N] ")

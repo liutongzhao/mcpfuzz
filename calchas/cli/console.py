@@ -146,10 +146,8 @@ def _fmt_line(ev: Event) -> str | None:
     if t == "sink.progress":
         return f"  sink progress {d.get('done')}/{d.get('total')}  ({d.get('tool')})"
     if t == "sink.labeled":
-        # the event carries weights={class: weight} and provenance={class: [evidence]}; show the raised classes with their weight
-        weights = d.get("weights", {})
-        tags = ", ".join(f"{c}({weights.get(c)})" for c in d.get("provenance", {})) \
-            or ", ".join(f"{c}({w})" for c, w in weights.items())
+        # the event carries classes=[...] (tested injection classes) and operations=[...]
+        tags = ", ".join(d.get("classes", []))
         return f"[sink] {d.get('tool')}.{d.get('param')} -> {tags}"
     if t == "sink.done":
         return f"sink inference done  {d.get('hot_count')}/{d.get('param_count')} parameters have candidates"

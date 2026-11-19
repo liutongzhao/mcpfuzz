@@ -2,16 +2,12 @@
 probes that carry their own control/channel.
 
 See the payload-synthesis design doc.
-- Consumes the sink's class_weights: generate a battery per enabled class, budgeted by weight; the floor
-  keeps a minimal battery per class; no gating by single label.
+- Consumes the parameter's classified injection classes (prior.classes): for each class send the FULL
+  battery; a class that is not classified is not tested at all (deterministic classification, no weights).
 - Each probe binds one oracle observable (needed for oob/inband) or carries a control (timing/differential).
 - Decoys (callback URL / marker) are minted by the oracle, the payload only fills them in — keeping it decoupled.
 """
 from __future__ import annotations
-
-import math
-
-from calchas.sink.types import W_MED
 
 from .batteries import get_battery
 from .types import ProbeSpec
@@ -20,58 +16,18 @@ from .types import ProbeSpec
 PATH_SIGNATURES = ["root:x:0:0:", "root:x:0:0", "daemon:x:"]
 
 
-def _select_templates(templates: list, weight: float) -> list:
-    """Pick which payloads of this class to send. "Full battery for evidence-backed classes, otherwise a
-    per-channel budgeted set", **guaranteeing no confirmation channel is cut entirely**.
-
-    - Classes with real evidence (weight >= W_MED, i.e. LLM medium/high or a rule parameter-name hit):
-      send the **full** battery, with reflection/timing/OOB channels all present (otherwise a no-echo sink
-      like eval/exec, relying on reflection alone, would be missed).
-    - Otherwise budget by `ceil(total x weight)` (floor >=2, to keep a recall lower bound), but **first
-      reserve 1 for each confirmation channel present** (inband/timing/oob/differential/cross_tool/
-      path_confine), then fill up to budget in original order — so the budget does not cut an orthogonal
-      channel like timing/OOB entirely (which was exactly why vegalite/Jij only scored suspected).
-    """
-    total = len(templates)
-    if total == 0:
-        return []
-    if weight >= W_MED:
-        return list(templates)
-    budget = min(max(2, math.ceil(total * weight)), total)
-    picked: list[int] = []
-    pickset: set[int] = set()
-    seen_ch: set[str] = set()
-    for i, t in enumerate(templates):          # first of each channel, to guarantee channel coverage
-        ch = t.get("channel", "")
-        if ch not in seen_ch:
-            seen_ch.add(ch)
-            picked.append(i)
-            pickset.add(i)
-    for i in range(total):                      # fill up to budget in original order
-        if len(picked) >= budget:
-            break
-        if i not in pickset:
-            picked.append(i)
-            pickset.add(i)
-    return [templates[i] for i in sorted(picked)]
-
-
 class PayloadSynthesizer:
     def __init__(self, oracle):
         self.oracle = oracle
 
     def synthesize(self, prior) -> list[ProbeSpec]:
-        """prior: sink.ParamSinkPrior. Budget per enabled class by class_weights, generate probes, merge and sort."""
-        if getattr(prior, "inert", False) or not getattr(prior, "class_weights", None):
+        """prior: sink.ParamSinkPrior. For each classified class send the full battery; no class -> no probes."""
+        if getattr(prior, "inert", False) or not getattr(prior, "classes", None):
             return []
         out: list[ProbeSpec] = []
         rank = 0
-        for cls in prior.ranked_classes():      # highest to lowest weight
-            weight = prior.class_weights[cls]
-            templates = get_battery(cls)
-            if not templates:
-                continue
-            for tpl in _select_templates(templates, weight):
+        for cls in prior.classes:
+            for tpl in get_battery(cls):
                 ps = self._build(prior.tool, prior.param_path, cls, tpl)
                 ps.rank = rank
                 rank += 1

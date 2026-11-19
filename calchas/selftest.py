@@ -1,7 +1,7 @@
-"""Payload-synthesis self-check (pure unit, sends no request, no network): build a class soft prior -> inspect the generated probe battery."""
+"""Payload-synthesis self-check (pure unit, sends no request, no network): build a classified prior -> inspect the generated probe battery."""
 from calchas.oracle import Oracle
 from calchas.payload import PayloadSynthesizer
-from calchas.sink.types import AI, CI, FLOOR, PT, SSRF, ParamSinkPrior
+from calchas.sink.types import CI, PT, SSRF, ParamSinkPrior
 
 
 def show(synth, title, prior):
@@ -14,18 +14,19 @@ def show(synth, title, prior):
 
 def run() -> int:
     synth = PayloadSynthesizer(Oracle())
-    # path parameter: PT high (0.7), the rest at the floor (0.1) — mirroring git_tag.path: the CI floor should also emit a few probes (no miss)
-    show(synth, "path: PT high + CI/AI/SSRF floor",
-         ParamSinkPrior("someTool", "path", "string",
-                        {CI: FLOOR, AI: FLOOR, PT: 0.7, SSRF: FLOOR}, False, "", {PT: ["rule"]}))
+    # repo_path classified as PT + CI (handed to git): full battery for both
+    show(synth, "repo_path: PT + CI",
+         ParamSinkPrior("someTool", "path", "string", classes=[CI, PT],
+                        provenance={CI: ["name matched keyword 'path'"], PT: ["name matched keyword 'path'"]}))
 
-    # SSRF high
-    show(synth, "url: SSRF high",
-         ParamSinkPrior("fetchTool", "url", "string",
-                        {CI: FLOOR, AI: FLOOR, PT: FLOOR, SSRF: 1.0}, False, "", {SSRF: ["rule"]}))
+    # url classified as SSRF only
+    show(synth, "url: SSRF",
+         ParamSinkPrior("fetchTool", "url", "string", classes=[SSRF],
+                        provenance={SSRF: ["name matched keyword 'url'"]}))
 
-    # inert parameter -> empty
-    assert synth.synthesize(ParamSinkPrior("t", "flag", "boolean", {}, True, "boolean")) == []
+    # no class -> empty; inert parameter -> empty
+    assert synth.synthesize(ParamSinkPrior("t", "msg", "string", classes=[])) == []
+    assert synth.synthesize(ParamSinkPrior("t", "flag", "boolean", inert=True, inert_reason="boolean")) == []
     print("\nself-check done (generation only, nothing sent)")
     return 0
 

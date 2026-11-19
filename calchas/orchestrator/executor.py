@@ -18,7 +18,7 @@ import time
 
 from calchas.__about__ import MARKER, TOKEN_PREFIX
 from calchas.driver import call_on
-from calchas.sink.types import AI, CODE, PT, SSRF, W_MED
+from calchas.sink.types import AI, CODE, PT, SSRF
 
 from .extract import extract_value
 from .types import CONFIRMED, DOS, LIKELY_CLEAN, SKIPPED, SUSPECTED, UNREACHED, Finding
@@ -524,13 +524,13 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     # a "definitely-nonexistent out-of-bounds target" (the "template" still differs after stripping the echoed
     # path strings) -> only then does it prove the tool truly accessed the out-of-bounds filesystem, not echoed.
     # Probes use /dev/null, /tmp (existing/writable parent) vs /<prefix>..._nx/d/x (parent dirs do not exist),
-    # all non-destructive. Gated: only run on parameters the sink marked as high-weight PT (>=W_MED), filtering
-    # out numbers/dates/enums and other non-path parameters. Safety: a fixed version fences off the out-of-bounds
-    # first -> existing/nonexistent both rejected into the same "blocked/normalized" template -> existence-insensitive
+    # all non-destructive. Gated: only run on parameters classified as PT, filtering out numbers/dates/enums
+    # and other non-path parameters. Safety: a fixed version fences off the out-of-bounds first -> existing/
+    # nonexistent both rejected into the same "blocked/normalized" template -> existence-insensitive
     # -> not triggered (negative samples are inherently safe).
-    pt_weight = getattr(prior, "class_weights", {}).get(PT, 0.0) if prior else 0.0
+    pt_classified = PT in getattr(prior, "classes", []) if prior else False
     if (pt_probe is not None and PT not in confirmed_classes and not any(w[0] == PT for w in weak)
-            and pt_weight >= W_MED):
+            and pt_classified):
         import secrets
         tk = secrets.token_hex(4)
         # reachable (existing / parent exists) targets vs unreachable (parent dirs do not exist) targets, each in absolute + traversal form

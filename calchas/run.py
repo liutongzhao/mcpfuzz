@@ -50,7 +50,8 @@ def make_run_dir(out_dir: Path, run_name: str | None, server_hint: str) -> Path:
 def _param_sink_dict(p) -> dict:
     d = {"tool": p.tool, "param_path": p.param_path, "param_type": p.param_type,
          "inert": p.inert, "inert_reason": p.inert_reason,
-         "class_weights": {c: round(w, 3) for c, w in p.class_weights.items()},
+         "classes": list(p.classes),
+         "operations": list(getattr(p, "operations", [])),
          "provenance": p.provenance}
     if getattr(p, "declared_domain", ""):
         d["declared_domain"] = p.declared_domain
@@ -135,13 +136,20 @@ def scan_target(target_arg: str, name: str | None, run_dir: Path, settings, repo
         (run_dir / "sinks.json").write_text(
             json.dumps([_param_sink_dict(p) for p in param_sinks], ensure_ascii=False, indent=2))
 
+        if settings.stage1_only:
+            hot = sum(1 for p in param_sinks if not p.inert and p.classes)
+            reporter.emit("run.end", duration=time.time() - t0, confirmed=0, suspected=0,
+                          clean=0, unreached=0, skipped=0, dos=0, stage1_only=True,
+                          param_count=len(param_sinks), hot_count=hot)
+            return []   # scan_target contract: return findings (none at stage 1)
+
         only_tools = set(settings.only_tools) if settings.only_tools else None
         exclude_tools = set(settings.exclude_tools) if settings.exclude_tools else set()
         only_sinks = set(settings.only_sinks) if settings.only_sinks else None
         if exclude_tools or only_sinks:
             param_sinks = [p for p in param_sinks
                           if p.tool not in exclude_tools
-                          and (only_sinks is None or any(c in only_sinks for c in p.class_weights))]
+                          and (only_sinks is None or any(c in only_sinks for c in p.classes))]
 
         oracle = Oracle(settings.oob_callback, settings.oob_query)
         # The Orchestrator internally creates a .plan_cache/ subdirectory under cache_dir; just pass run_dir itself
