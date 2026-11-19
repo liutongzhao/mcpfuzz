@@ -36,6 +36,13 @@ def _get_agent_loop():
     global _AGENT_LOOP
     if _AGENT_LOOP is None or _AGENT_LOOP.is_closed():
         _AGENT_LOOP = asyncio.new_event_loop()
+        # Invariant: a fresh loop must come with a fresh model. The ChatOpenAI singleton's httpx client binds to
+        # the loop it was first used on; carrying it onto a new loop makes the next tool hit 'Event loop is closed'
+        # (P7). _reset_agent_loop_after_abort already pairs loop+model on the timeout path, but the is_closed()
+        # branch above has no such pairing -- enforcing it here, at the single place loops are born, closes that
+        # gap for good without special-casing how the old loop died. Idempotent: no-op when the model is unset
+        # (first call), so it is always safe.
+        agent.reset_model()
     return _AGENT_LOOP
 
 
