@@ -16,7 +16,7 @@ import asyncio
 import re
 import time
 
-from calchas.__about__ import MARKER, TOKEN_PREFIX
+from calchas.__about__ import MARKER
 from calchas.driver import call_on
 from calchas.sink.types import AI, CODE, PT, SSRF
 
@@ -337,15 +337,12 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
     last_err = ""
     confirmed_classes: set = set()   # already-confirmed vuln classes -> intra-class early-stop (stop sending that class's remaining payloads), other classes continue
     confirmed_findings: list = []    # one record per confirmed class (a parameter can hit several classes at once)
-    pt_probe = None                  # capture one PT probe -> after the loop, do the "path-acceptance self-calibrating differential" suspected judgement
 
     def _mark(cls, finding):
         confirmed_findings.append(finding)
         confirmed_classes.add(cls)
 
     for p in probes:
-        if p.vuln_class == PT and pt_probe is None:
-            pt_probe = p             # note that this parameter does have a PT candidate (sink inference gave PT weight)
         if p.vuln_class in confirmed_classes:
             continue   # this class is already confirmed -> intra-class early-stop: skip its remaining payloads; other classes continue
         args = _shaped_args(base_args, prior, p.value, getattr(p, "placement", "value"))
@@ -530,58 +527,16 @@ async def _attack_param(session, target, base_args, prior, synthesizer, oracle, 
             else:
                 _mark(p.vuln_class, _confirmed(target, param, p.vuln_class, p, hit.evidence, seq_trace, args, "oob"))
 
-    # -- PT path-acceptance self-calibrating differential (generic suspected tier) -- existence-sensitive version --
-    # Write/operation-type path traversal often has no content echo and no paired read-back tool -> inband
-    # signature / cross_tool read-back cannot reach it -> the old version missed it.
-    # The old criterion "two arbitrary in-bounds paths produce different output (t1!=t2)" is satisfied by pure
-    # echo (echoing a.txt != b.txt already makes t1!=t2), unable to tell "truly doing a file operation on the
-    # path" from "echoing the input into the response" -> widespread false positives on non-path parameters
-    # (numbers/dates/keys) and on fixed versions.
-    # Changed to [existence-sensitive]: the tool reacts differently to a "real existing out-of-bounds target" and
-    # a "definitely-nonexistent out-of-bounds target" (the "template" still differs after stripping the echoed
-    # path strings) -> only then does it prove the tool truly accessed the out-of-bounds filesystem, not echoed.
-    # Probes use /dev/null, /tmp (existing/writable parent) vs /<prefix>..._nx/d/x (parent dirs do not exist),
-    # all non-destructive. Gated: only run on parameters classified as PT, filtering out numbers/dates/enums
-    # and other non-path parameters. Safety: a fixed version fences off the out-of-bounds first -> existing/
-    # nonexistent both rejected into the same "blocked/normalized" template -> existence-insensitive
-    # -> not triggered (negative samples are inherently safe).
-    pt_classified = PT in getattr(prior, "classes", []) if prior else False
-    if (pt_probe is not None and PT not in confirmed_classes and not any(w[0] == PT for w in weak)
-            and pt_classified):
-        import secrets
-        tk = secrets.token_hex(4)
-        # reachable (existing / parent exists) targets vs unreachable (parent dirs do not exist) targets, each in absolute + traversal form
-        reach = ["/dev/null", "../../../../../../dev/null",
-                 f"/tmp/{TOKEN_PREFIX}{tk}_r", f"../../../../../../tmp/{TOKEN_PREFIX}{tk}_r"]
-        nxs = [f"/{TOKEN_PREFIX}{tk}_nx/d/x", f"../../../../../../{TOKEN_PREFIX}{tk}_nx/d/x"]
-        allp = reach + nxs
-
-        async def _call_path(v):
-            a = _shaped_args(base_args, prior, v, getattr(pt_probe, "placement", "value"))
-            if a is None:
-                return None
-            r, _ = await _timed_call(session, target, a)
-            return r
-
-        # Unreachable baseline: the set of "templates" after stripping all probe path strings (and normalizing numbers); if non-deterministic (several different templates), do not judge
-        nx_tpls = set()
-        for nv in nxs:
-            rn = await _call_path(nv)
-            if rn is not None:
-                nx_tpls.add(_norm_pt_readback(rn.get("text") or "", allp))
-        if nx_tpls:
-            for rv in reach:
-                rr = await _call_path(rv)
-                if rr is None:
-                    continue
-                tpl = _norm_pt_readback(rr.get("text") or "", allp)
-                # Existence-sensitive: a reachable target's "template" is not in any "unreachable" template -> the tool reacts to the existence of the out-of-bounds target -> a real path operation
-                if tpl not in nx_tpls:
-                    a_oob = _shaped_args(base_args, prior, rv, getattr(pt_probe, "placement", "value")) or base_args
-                    weak.append((PT, pt_probe, {"type": "path_accept_nofence", "channel": "self_diff",
-                        "reach": rv, "nonexist": nxs[0], "snippet": (rr.get("text") or "")[:160], "args": a_oob,
-                        "note": "the tool reacts differently to an 'existing out-of-bounds target' (/dev/null or /tmp) vs a 'nonexistent out-of-bounds target' (template still differs after stripping path strings) = it is truly accessing the out-of-bounds filesystem, not merely echoing -> suspected path traversal"}))
-                    break
+    # NOTE: the PT "path-acceptance self-calibrating differential" (path_accept_nofence) weak-evidence channel was
+    # removed. It fired when a PT-classified parameter responded differently to an existing out-of-bounds target
+    # (/dev/null, /tmp) vs a nonexistent one, intended to catch write/operation-type PT with no content echo and no
+    # read-back tool. Measurement on the frozen ground-truth showed it has ~no discriminative power: it fired on
+    # fixed (patched) versions as often as on vulnerable ones (same params), because most fixes only block `../`
+    # traversal while the tool still reads absolute in-bounds-looking paths and reacts to their existence —
+    # "reacting to out-of-bounds-target existence" proves the tool does file I/O, not that it crosses a security
+    # boundary. PT now relies solely on positive proof (inband read-back of an out-of-bounds file's content
+    # signature, or a landed write canary via path_confine), consistent with the fail-closed stance of the other
+    # classes. No-echo / no-read-back write-type PT is an acknowledged black-box limitation.
 
     # Any class confirmed -> return all confirmed results (one per class); not overridden by weak/clean
     if confirmed_findings:
