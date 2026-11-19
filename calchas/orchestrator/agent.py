@@ -8,12 +8,14 @@ See the sequence-construction agent design doc.
   reachability verdict**.
 - Boundary: use **benign values only** to bring the target tool to a "legally callable" ready state — no
   payload injection, no vulnerability judgement (constrained by the system prompt).
-- The discovery phase builds its own MCP connection (separate from the attack session); the resulting Plan (the
-  recorded recipe) is handed to executor for deterministic replay in the attack session.
+- Live session: exploration runs on the **same MCP session the attack will use** (explore_on_session takes an
+  already-open session; langchain-mcp-adapters routes a provided session's tool calls to it). So the server-side
+  state the agent builds (working dir, created resources) stays live for the attack — no two-session reproduction
+  gap. The recorded recipe (Plan) is kept for reporting/caching; on a cache hit it is replayed instead.
 - Exit: recursion_limit as a hard budget; the prompt asks to "stop once the target calls through / explain if
   unreachable"; **reachability is judged by the execution trace** (whether the target tool was successfully
   called), not by the LLM's self-report.
-- When langgraph is unavailable or errors, fall back to planner's one-shot planning / schema fallback.
+- When langgraph is unavailable or errors, the caller falls back to planner's one-shot planning / schema fallback.
 """
 from __future__ import annotations
 
@@ -22,8 +24,8 @@ import json
 import re
 from pathlib import Path
 
-from calchas.llm_failover import AllModelsUnavailable
 from . import planner
+from .extract import find_value_path
 from .types import Plan, Step
 
 SYSTEM = """You are a setup assistant for black-box API testing. Your ONLY job is to make a TARGET tool
@@ -113,19 +115,31 @@ def _extract_calls(messages) -> list:
     return calls
 
 
-def _arg_spec(param_name, value, prior_results):
-    """Decide whether a parameter is recorded as a "literal" or a "dependency edge (from_step)" in the recipe:
-    if the value **appears in some earlier step's successful response** (= a dynamic value, e.g. a session_id
-    returned by creating a session) -> record it as from_step, so on replay extract_value re-fetches it from
-    that step's **current** response, avoiding a stale literal (see item ④ / the sequence-construction agent
-    design doc). Otherwise record a literal. Enabled only for sufficiently long / non-trivial values, to avoid
-    mis-matching '1'/'true'."""
+def _arg_spec(param_name, value, prior_results, param=None):
+    """Decide whether a parameter is recorded as a "literal" or a "dependency edge (from_step)" in the recipe.
+
+    from_step criterion (tightened, see docs/from_step链改造设计.md): the value must **equal a structured leaf**
+    in some earlier step's successful response (via find_value_path), not merely appear as a substring of the
+    serialized text — a bare substring (e.g. the word "current" inside a message) is a coincidence, not a
+    dependency, and the old substring rule mis-recorded such literals as from_step, which then failed to resolve
+    on replay and SKIPped the whole tool. When it is a real leaf, record its **JSON path + the value**: on replay
+    extract_value reads that exact path from the fresh response (deterministic), and falls back to the recorded
+    value if the path no longer resolves (so a reset session / expired token degrades to the known value instead
+    of SKIP). Otherwise record a literal.
+
+    schema guard: a parameter with a declared **enum** is a fixed choice set, never produced by a prior response
+    -> always literal, regardless of any substring/leaf coincidence (fixes the enum-param false from_step)."""
+    if param is not None and getattr(param, "enum", None):
+        return {"src": "literal", "value": value}
     sval = str(value)
     if len(sval) >= 6 and not isinstance(value, bool):
         for step_no, rtext in prior_results:
-            if rtext and sval in str(rtext):
-                return {"src": "from_step", "step": step_no,
-                        "extract": f"{param_name} (value looks like '{sval[:48]}')"}
+            if not rtext:
+                continue
+            path = find_value_path(rtext, value)
+            if path is not None:
+                return {"src": "from_step", "step": step_no, "path": path,
+                        "value": value, "extract": param_name}
     return {"src": "literal", "value": value}
 
 
@@ -156,8 +170,9 @@ def _build_plan_from_calls(target_name, calls, target_tool) -> Plan:
         targs = tgt_any[-1][1]
     else:
         targs = {p.path: planner._fallback_literal(p) for p in target_tool.params if p.required}
+    param_by_path = {p.path: p for p in target_tool.params}   # for the enum schema guard in _arg_spec
     steps.append(Step(len(steps) + 1, target_name,
-                      {k: _arg_spec(k, v, prior_results) for k, v in targs.items()}))
+                      {k: _arg_spec(k, v, prior_results, param_by_path.get(k)) for k, v in targs.items()}))
 
     target_confirmed = bool(tgt_ok)   # whether the agent actually got the target to call through (for the note only, NOT Plan.reachable)
     note = (f"agent reached the target ({len(pre)} prerequisite steps)" if target_confirmed
@@ -189,47 +204,44 @@ def _is_provider_down(err) -> bool:
     return bool(re.search(r"Error code:\s*40[123]\b", str(err)))
 
 
-async def _run_langgraph(url, headers, target_tool, catalog, settings, reporter) -> Plan:
-    from langchain_mcp_adapters.client import MultiServerMCPClient
-    from langchain_mcp_adapters.tools import load_mcp_tools
+async def explore_on_session(session, tools, target_tool, settings, reporter) -> Plan:
+    """Run the ReAct agent on an **already-open MCP session** (the attack session itself, see the live-session
+    design / docs/from_step链改造设计.md §后续) to bring target_tool to a legally-callable, benign ready state.
+
+    Because the agent's tool calls go through this same session (langchain-mcp-adapters routes a provided
+    session's calls to it), all the server-side state it builds (working dir, created resources, set_project)
+    stays live on the session the attack will use — no two-session replay, no state reproduction gap. Returns
+    the recorded recipe (Plan); the caller attacks on the same session with run_tool(live=True).
+
+    `tools` are the StructuredTools already loaded from `session` (load_mcp_tools). Raises on a
+    credential/account-level provider failure (for the batch layer to pause); any other error is the caller's to
+    turn into a schema-fallback single step."""
     from langgraph.prebuilt import create_react_agent
 
     model = _make_model(settings)
-    conn = {"url": url, "transport": "streamable_http"}
-    if headers:
-        conn["headers"] = headers
-    client = MultiServerMCPClient({"target": conn})
-
     rounds = max(1, getattr(settings, "agent_rounds", 6) if settings else 6)
     recursion = max(10, rounds * 6)
-
-    # Persistent session: tools bound to the same MCP session, so state like set_working_dir is retained throughout the exploration
-    async with client.session("target") as session:
-        tools = await load_mcp_tools(session)
-        # P1: MCP/gateway tool names often contain dots and other characters illegal in an OpenAI function name
-        # (which allows only [a-zA-Z0-9_-]; a dotted name is rejected by the relay with 502 -> sequence
-        # construction fully stalls). Normalize tool names at the LLM boundary, then map the call trace back to
-        # the real names; the actual MCP call still uses the original name, unaffected.
-        name_map = _sanitize_tool_names(tools)   # {sanitized_name: original_name}
-        # The target's display name on the LLM side = its sanitized name; if the catalog name and the adapter
-        # name happen to diverge and miss the mapping, also fall back to the "sanitized target name" (not the
-        # dotted original), ensuring what is handed to the LLM is always a valid function name.
-        target_disp = next((s for s, o in name_map.items() if o == target_tool.name), None) \
-            or (re.sub(r"[^a-zA-Z0-9_-]", "_", target_tool.name)[:64] or "tool")
-        agent = create_react_agent(model, tools, prompt=SYSTEM)
-        last = None
-        try:
-            async for chunk in agent.astream({"messages": [("user", _goal(target_tool, target_disp))]},
-                                             config={"recursion_limit": recursion},
-                                             stream_mode="values"):
-                last = chunk
-        except Exception as e:
-            reporter.emit("agent.limit", level="debug", tool=target_tool.name, error=str(e)[:200])
-            if _is_provider_down(e):
-                # Credential/balance-level persistent failure: do not fall back to a schema single step here (that
-                # would be a fake run); bubble up to build_sequence -> first try chat()'s three-tier switching,
-                # and only if all are down -> AllModelsUnavailable -> the batch layer pauses gracefully (resumable with --resume).
-                raise
+    # P1: MCP/gateway tool names often contain dots and other characters illegal in an OpenAI function name
+    # (which allows only [a-zA-Z0-9_-]; a dotted name is rejected by the relay with 502 -> sequence construction
+    # fully stalls). Normalize tool names at the LLM boundary, then map the call trace back to the real names; the
+    # actual MCP call still uses the original name (and the attack uses the catalog name), unaffected.
+    name_map = _sanitize_tool_names(tools)   # {sanitized_name: original_name}
+    target_disp = next((s for s, o in name_map.items() if o == target_tool.name), None) \
+        or (re.sub(r"[^a-zA-Z0-9_-]", "_", target_tool.name)[:64] or "tool")
+    react = create_react_agent(model, tools, prompt=SYSTEM)
+    last = None
+    try:
+        async for chunk in react.astream({"messages": [("user", _goal(target_tool, target_disp))]},
+                                         config={"recursion_limit": recursion},
+                                         stream_mode="values"):
+            last = chunk
+    except Exception as e:
+        reporter.emit("agent.limit", level="debug", tool=target_tool.name, error=str(e)[:200])
+        if _is_provider_down(e):
+            # Credential/balance-level persistent failure: do not fall back to a schema single step here (that
+            # would be a fake run); bubble up so the caller first tries chat()'s three-tier switching, and only if
+            # all are down -> AllModelsUnavailable -> the batch layer pauses gracefully (resumable with --resume).
+            raise
 
     messages = (last or {}).get("messages", []) if isinstance(last, dict) else []
     calls = _extract_calls(messages)
@@ -286,32 +298,3 @@ def _make_model(settings):
                         extra_body=prov.get("extra_body") or None)
     _MODEL_PROVIDER = prov["name"]
     return _MODEL
-
-
-async def build_sequence(url, headers, target_tool, catalog, settings, reporter, cache_dir=None) -> Plan:
-    """Produce a sequence (Plan) that makes target_tool legally callable. Prefer the LangGraph agent; fall back to one-shot planning if unavailable/erroring."""
-    cf = _cache_file(cache_dir, catalog.server_name, target_tool.name)
-    if cf and cf.exists():
-        reporter.emit("agent.cache_hit", level="debug", tool=target_tool.name)
-        return _plan_from_dict(json.loads(cf.read_text()))
-
-    try:
-        plan = await _run_langgraph(url, headers, target_tool, catalog, settings, reporter)
-    except AllModelsUnavailable:
-        raise   # all models down: do not degrade to the schema fallback, bubble up so the batch layer pauses detection
-    except Exception as e:
-        reporter.emit("agent.error", level="debug", tool=target_tool.name, error=str(e)[:200])
-        # Fallback: LLM one-shot planning (planner goes through llm_failover, which auto-switches to a backup and
-        # moves the cursor to a working model, so the next tool's agent switches accordingly); if even planning
-        # fails on all models -> AllModelsUnavailable bubbles up to pause.
-        try:
-            plan = planner.plan(target_tool, catalog) if (settings is None or settings.llm_plan) \
-                else planner.fallback_plan(target_tool)
-        except AllModelsUnavailable:
-            raise
-        except Exception:
-            plan = planner.fallback_plan(target_tool)
-
-    if cf:
-        cf.write_text(json.dumps(_plan_to_dict(plan), ensure_ascii=False))
-    return plan

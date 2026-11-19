@@ -6,6 +6,7 @@ send payloads per parameter and verify -> aggregate into Findings.
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
 import time
 from pathlib import Path
@@ -47,7 +48,7 @@ def _get_agent_loop():
 
 class ToolBudgetExceeded(BaseException):
     """Per-tool budget-exceeded interrupt. **Deliberately subclasses BaseException** (not Exception): so the
-    `except Exception` blocks in _build_plan_sync / _attack_tool do not swallow it, and it can bubble all the
+    `except Exception` blocks in _explore_and_attack / _attack_tool do not swallow it, and it can bubble all the
     way up to the tool loop to be handled specially."""
 
 
@@ -167,12 +168,26 @@ class Orchestrator:
             t_tool = time.time()
             armed = _arm_tool_alarm(tool_budget)
             try:
-                # Sequence construction happens outside the attack session (the agent builds its own MCP connection for discovery), then a session is opened for deterministic replay
-                plan = self._build_plan_sync(tool, use_agent, plan_cache, agent_cache)
-                self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
-                                   steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
-                                   param_count=len(sink_params))
-                findings += self._attack_tool(tool, plan, sink_params, timeout, poll_window, retries)
+                # Decide how the target becomes callable: a benign direct probe screens out independent tools
+                # (single-step, no agent); a non-direct tool goes to the live-session agent (explore + attack on
+                # ONE session, so the state the agent builds stays live for the attack — no two-session replay);
+                # with the agent off, fall back to one-shot planning + replay.
+                direct_plan = self._try_direct(tool) if use_llm_plan else None
+                if direct_plan is not None:
+                    self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
+                                       steps=len(direct_plan.steps), reachable=direct_plan.reachable,
+                                       note=direct_plan.note, param_count=len(sink_params))
+                    findings += self._attack_tool(tool, direct_plan, sink_params, timeout, poll_window, retries)
+                elif use_agent:
+                    findings += self._explore_and_attack_sync(tool, sink_params, idx, total,
+                                                              timeout, poll_window, agent_cache)
+                else:
+                    plan = planner.plan(tool, self.catalog, cache_dir=plan_cache) if use_llm_plan \
+                        else planner.fallback_plan(tool)
+                    self.reporter.emit("attack.plan", tool=tool_name, index=idx, total=total,
+                                       steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
+                                       param_count=len(sink_params))
+                    findings += self._attack_tool(tool, plan, sink_params, timeout, poll_window, retries)
             except ToolBudgetExceeded:
                 findings += self._on_tool_timeout(tool_name, idx, total, t_tool, tool_budget, sink_params)
             except BaseException as e:   # noqa: BLE001
@@ -204,35 +219,78 @@ class Orchestrator:
         return [Finding(tool_name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
                 for ps in sink_params]
 
-    def _build_plan_sync(self, tool, use_agent, plan_cache, agent_cache):
-        """Sequence construction. First decide "is a prerequisite needed": directly try calling the target tool
-        once with benign values —
-        **if it calls through, it is an independent tool, use a single-step plan and do not involve the agent /
-        one-shot planner**; only if it does not call through do we build a sequence.
-        This is the most reliable generic criterion (no static dependency guessing, not targeted at any server),
-        and it incidentally yields the "fraction of tools needing sequence construction" metric.
-        """
-        want_llm_plan = self.settings is None or self.settings.llm_plan
-        if want_llm_plan:
-            base_plan = planner.fallback_plan(tool)
-            if self._direct_reachable(tool, base_plan):
-                base_plan.note = "directly reachable (input does not depend on other tools, no sequence construction needed)"
-                self.reporter.emit("plan.direct", level="debug", tool=tool.name)
-                return base_plan
-            self.reporter.emit("plan.needs_sequence", level="debug", tool=tool.name)
+    def _try_direct(self, tool):
+        """Benign direct probe: call the target once with schema values. If it calls through, it is an
+        independent tool — return a single-step plan (no sequence / agent needed); else None (needs a sequence).
+        The most reliable generic criterion (no static dependency guessing, not targeted at any server), and it
+        incidentally yields the "fraction of tools needing sequence construction" metric."""
+        base_plan = planner.fallback_plan(tool)
+        if self._direct_reachable(tool, base_plan):
+            base_plan.note = "directly reachable (input does not depend on other tools, no sequence construction needed)"
+            self.reporter.emit("plan.direct", level="debug", tool=tool.name)
+            return base_plan
+        self.reporter.emit("plan.needs_sequence", level="debug", tool=tool.name)
+        return None
 
-        if use_agent:
-            try:
-                return self._agent_run(agent.build_sequence(
-                    self.url, self.headers, tool, self.catalog, self.settings,
-                    self.reporter, cache_dir=agent_cache))
-            except AllModelsUnavailable:
-                raise   # all models down: bubble up to the batch layer to pause, no further fallback
-            except Exception as e:
-                self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
-        if want_llm_plan:
-            return planner.plan(tool, self.catalog, cache_dir=plan_cache)
-        return planner.fallback_plan(tool)
+    def _explore_and_attack_sync(self, tool, sink_params, idx, total, timeout, poll_window, agent_cache):
+        """Live-session path (run on the persistent agent loop): explore + attack on one session.
+
+        On a genuine failure (session establishment / mid-flight error) discard the possibly-dirty shared loop so
+        it does not pollute later tools, and record the tool as not-tested — but a budget/timeout interrupt (bare
+        or wrapped by anyio into a group) and an all-models-down signal must propagate to their own handlers."""
+        try:
+            return self._agent_run(self._explore_and_attack(
+                tool, sink_params, idx, total, timeout, poll_window, agent_cache))
+        except (AllModelsUnavailable, ToolBudgetExceeded):
+            raise
+        except BaseException as e:   # noqa: BLE001
+            if isinstance(e, BaseExceptionGroup):
+                budget_exc, _rest = e.split(ToolBudgetExceeded)
+                if budget_exc is not None:
+                    raise
+                amu, _rest2 = e.split(AllModelsUnavailable)
+                if amu is not None:
+                    raise
+            _reset_agent_loop_after_abort()   # the shared loop may be half-stopped; rebuild for the next tool
+            note = f"live session/exploration error: {str(e)[:150]}"
+            self.reporter.emit("attack.tool.error", tool=tool.name, error=note)
+            return [Finding(tool.name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
+                    for ps in sink_params]
+
+    async def _explore_and_attack(self, tool, sink_params, idx, total, timeout, poll_window, agent_cache):
+        """Open ONE session, make the target callable on it (cached recipe replay, or agent exploration that
+        builds live state), then attack on that same session. When the agent built the state here, live=True tells
+        run_tool not to replay prerequisites (state is already present); a cached recipe (state not built on this
+        fresh session) is replayed as before (live=False)."""
+        from langchain_mcp_adapters.tools import load_mcp_tools
+        cf = agent._cache_file(agent_cache, self.catalog.server_name, tool.name)
+        async with open_session(self.url, self.headers, timeout=timeout) as session:
+            live = True
+            if cf and cf.exists():
+                plan = agent._plan_from_dict(json.loads(cf.read_text()))
+                self.reporter.emit("agent.cache_hit", level="debug", tool=tool.name)
+                live = False   # cached recipe: prerequisites not executed on this session -> replay them
+            else:
+                try:
+                    tools = await load_mcp_tools(session)
+                    plan = await agent.explore_on_session(session, tools, tool, self.settings, self.reporter)
+                except AllModelsUnavailable:
+                    raise   # all models down: do not degrade, bubble up so the batch layer pauses
+                except Exception as e:
+                    self.reporter.emit("agent.error", level="debug", tool=tool.name, error=str(e)[:200])
+                    plan = planner.fallback_plan(tool)   # attack the target directly on the live session
+                if cf and not plan.note.startswith("fallback"):
+                    try:
+                        cf.write_text(json.dumps(agent._plan_to_dict(plan), ensure_ascii=False))
+                    except Exception:
+                        pass
+            self.reporter.emit("attack.plan", tool=tool.name, index=idx, total=total,
+                               steps=len(plan.steps), reachable=plan.reachable, note=plan.note,
+                               param_count=len(sink_params))
+            liveness, read_back = self._make_helpers(session, tool)
+            return await run_tool(session, plan, sink_params, self.synth, self.oracle,
+                                  poll_window=poll_window, reporter=self.reporter, settings=self.settings,
+                                  liveness=liveness, read_back=read_back, live=live)
 
     def _direct_reachable(self, tool, base_plan) -> bool:
         """Call the target tool once directly with base_plan's schema/benign arguments: non-error means it is
@@ -292,34 +350,42 @@ class Orchestrator:
         return [Finding(tool.name, ps.param_path, _repr_class(ps), SKIPPED, note=note)
                 for ps in sink_params]
 
+    def _make_helpers(self, session, tool):
+        """Build the (liveness, read_back) closures over a session, shared by the replay attack (_attack_once) and
+        the live-session attack (_explore_and_attack)."""
+        timeout = self.settings.timeout if self.settings else None
+
+        async def liveness():
+            # Liveness heartbeat: prefer reusing the current session (list_tools), do not open a concurrent
+            # session. For a backend without session isolation (e.g. stdio), a concurrent second initialize while
+            # the battery session is still open fails spuriously, which once caused every tool to falsely report
+            # "crashed". Only open a new session to probe the server's real state when the current session is
+            # unusable, and on a real failure raise (raise_on_fail) so the upper-level recheck records the reason,
+            # distinguishing "the server died" from "the local session broke".
+            try:
+                await session.list_tools()
+                return True
+            except Exception:
+                return await ping(self.url, self.headers, timeout, raise_on_fail=True)
+
+        read_back = None
+        if self._reader and self._reader[0] != tool.name:
+            rtool, rpath, rother = self._reader
+
+            async def read_back(path, _rt=rtool, _rp=rpath, _ro=rother):
+                res = await call_on(session, _rt, {**_ro, _rp: path})
+                # If the read tool itself errors (e.g. fenced off with "path escapes ALLOWED_ROOTS") -> treat as
+                # "cannot read" and return empty. Only genuinely read-back content counts as canary-landing
+                # evidence (fail-closed, does not parse rejection wording).
+                if res.get("is_error"):
+                    return ""
+                return res.get("text", "")
+
+        return liveness, read_back
+
     async def _attack_once(self, tool, plan, sink_params, timeout, poll_window) -> list:
         async with open_session(self.url, self.headers, timeout=timeout) as session:
-            async def liveness():
-                # Liveness heartbeat: prefer reusing the current session (list_tools), do not open a concurrent
-                # session. For a backend without session isolation (e.g. stdio), a concurrent second initialize
-                # while the battery session is still open fails spuriously, which once caused every tool to
-                # falsely report "crashed". Only open a new session to probe the server's real state when the
-                # current session is unusable, and on a real failure raise (raise_on_fail) so the upper-level
-                # recheck records the reason, distinguishing "the server died" from "the local session broke".
-                try:
-                    await session.list_tools()
-                    return True
-                except Exception:
-                    return await ping(self.url, self.headers, timeout, raise_on_fail=True)
-
-            read_back = None
-            if self._reader and self._reader[0] != tool.name:
-                rtool, rpath, rother = self._reader
-
-                async def read_back(path, _rt=rtool, _rp=rpath, _ro=rother):
-                    res = await call_on(session, _rt, {**_ro, _rp: path})
-                    # If the read tool itself errors (e.g. fenced off with "path escapes ALLOWED_ROOTS") -> treat
-                    # as "cannot read" and return empty. Only genuinely read-back content counts as canary-landing
-                    # evidence (fail-closed, does not parse rejection wording).
-                    if res.get("is_error"):
-                        return ""
-                    return res.get("text", "")
-
+            liveness, read_back = self._make_helpers(session, tool)
             return await run_tool(session, plan, sink_params, self.synth, self.oracle,
                                   poll_window=poll_window, reporter=self.reporter,
                                   settings=self.settings, liveness=liveness, read_back=read_back)

@@ -72,7 +72,11 @@ async def _resolve_args(arg_specs: dict, step_responses: dict) -> tuple[dict, li
             continue
         if spec.get("src") == "from_step":
             resp = step_responses.get(spec.get("step"))
-            val = extract_value(resp or "", spec.get("extract", "")) if resp is not None else None
+            if resp is not None:
+                # recorded path (deterministic) -> scored field match -> recorded value (agent path, no LLM) -> LLM
+                val = extract_value(resp, spec.get("extract", ""), spec.get("path"), spec.get("value"))
+            else:
+                val = spec.get("value")   # producer step never ran -> fall back to the value discovery used
             if val is None:
                 missing.append(param)
             else:
@@ -83,11 +87,16 @@ async def _resolve_args(arg_specs: dict, step_responses: dict) -> tuple[dict, li
 
 
 async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=(3, 2.0),
-                   reporter=None, settings=None, liveness=None, read_back=None) -> list:
+                   reporter=None, settings=None, liveness=None, read_back=None, live=False) -> list:
     """plan.steps[-1] is the target tool. sink_params: the list of ParamSinkPrior to test for this tool. Returns a list of Findings.
 
     liveness: optional async liveness probe (no args, returns bool), for crash/DoS observation.
     read_back: optional async(path)->text read-back (paired read-file tool), for cross_tool canary verdicts.
+    live: True when the plan's prerequisites were already executed on THIS session during agent exploration
+          (live-session attack) — the server-side state is already present, so do NOT replay the prerequisite
+          steps (replaying would double-create resources). The target's from_step args then resolve via their
+          recorded values (extract_value's value fallback), which are exactly the values the agent used to reach
+          the target on this same session.
     """
     reporter = reporter or _NullReporter()
     target = plan.steps[-1].tool
@@ -96,26 +105,34 @@ async def run_tool(session, plan, sink_params, synthesizer, oracle, poll_window=
     if not plan.reachable:
         return _skipped_all(target, sink_params, plan.note or "plan judged the target unreachable", reporter)
 
-    # 1) Build the launch pad: execute prerequisite steps best-effort. One step failing does not abandon the whole thing — prerequisites are mostly "ensure a resource exists" groundwork.
+    # 1) Build the launch pad.
     step_responses = {}
     launchpad_errors = []
-    for st in plan.steps[:-1]:
-        args, missing = await _resolve_args(st.args, step_responses)
-        if missing:
-            launchpad_errors.append(f"step {st.step} ({st.tool}) parameters {missing} could not be resolved")
+    if live:
+        # State was built on this session by the agent's exploration; record the recipe for reproducibility but
+        # do not re-run the prerequisites. Target from_step args fall back to their recorded values below.
+        seq_trace = [{"tool": st.tool, "args": {k: v.get("value") for k, v in (st.args or {}).items()
+                                                if isinstance(v, dict)}, "is_error": False}
+                     for st in plan.steps[:-1]]
+    else:
+        # Replay prerequisite steps best-effort. One step failing does not abandon the whole thing — prerequisites are mostly "ensure a resource exists" groundwork.
+        for st in plan.steps[:-1]:
+            args, missing = await _resolve_args(st.args, step_responses)
+            if missing:
+                launchpad_errors.append(f"step {st.step} ({st.tool}) parameters {missing} could not be resolved")
+                reporter.emit("launchpad.step", level="debug", tool=st.tool, step=st.step,
+                              skipped=True, missing=missing, reason="a depended-on prerequisite output is absent, skipping this step")
+                continue
+            res = await _safe_call(session, st.tool, args)
+            step_responses[st.step] = res["text"]
+            seq_trace.append({"tool": st.tool, "args": args, "is_error": res["is_error"]})
             reporter.emit("launchpad.step", level="debug", tool=st.tool, step=st.step,
-                          skipped=True, missing=missing, reason="a depended-on prerequisite output is absent, skipping this step")
-            continue
-        res = await _safe_call(session, st.tool, args)
-        step_responses[st.step] = res["text"]
-        seq_trace.append({"tool": st.tool, "args": args, "is_error": res["is_error"]})
-        reporter.emit("launchpad.step", level="debug", tool=st.tool, step=st.step,
-                      args=res.get("args_sent", args), is_error=res["is_error"],
-                      response=res.get("text", ""), error=res.get("exc"))
-        if res["is_error"]:
-            launchpad_errors.append(f"step {st.step} ({st.tool}) call errored")
-    if launchpad_errors:
-        reporter.emit("launchpad.warn", tool=target, reason="; ".join(launchpad_errors))
+                          args=res.get("args_sent", args), is_error=res["is_error"],
+                          response=res.get("text", ""), error=res.get("exc"))
+            if res["is_error"]:
+                launchpad_errors.append(f"step {st.step} ({st.tool}) call errored")
+        if launchpad_errors:
+            reporter.emit("launchpad.warn", tool=target, reason="; ".join(launchpad_errors))
 
     # 2) The target tool's launch-pad arguments (the last step): only judge SKIPPED if a value truly cannot be resolved
     base_args, missing = await _resolve_args(plan.steps[-1].args, step_responses)
