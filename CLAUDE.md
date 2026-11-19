@@ -30,13 +30,13 @@
 
 | 目录 | 放什么 | 不放什么 | 进 git |
 |---|---|---|---|
-| `calchas/` | 检测工具源码。子模块：`cli/` 命令行、`sink/` 阶段一参数分类、`orchestrator/` 阶段二序列构建与攻击编排、`payload/` 载荷电池、`oracle/` 阶段三执行确认；`__about__.py` 存名字/版本 | 实验脚本、数据、针对个别服务的特判 | 是（`payload/_raw/` 词表除外） |
+| `calchas/` | 检测工具源码。子模块：`cli/` 命令行、`sink/` 阶段一参数分类（`sink/keyword_lexicon.json` 是关键词匹配用的词表，由 `dataset/keyword_lexicon.py` 生成，勿手改）、`orchestrator/` 阶段二序列构建与攻击编排、`payload/` 载荷电池、`oracle/` 阶段三执行确认；`__about__.py` 存名字/版本 | 实验脚本、数据、针对个别服务的特判 | 是（`payload/_raw/` 词表除外） |
 | `dev/` | 开发者自用的脚本：调试/自检 `dump_catalog.py`、`dump_sinks.py`、`selftest_oracle.py`（要连靶机），在仓库根用 `.venv/bin/python dev/xxx.py` 运行；发版 `release.sh`（改版本号→打包→检查→试装→上传→打标签） | 用户会用到的功能（这类功能做成 `calchas` 子命令） | 是 |
 | `deploy/services/` | 服务器 A 上长期运行的实验服务的 compose 配置：`oob/`（calchas-oob）、`gateway/`（calchas-gateway + `configure.sh` + 扩展镜像 `Dockerfile.ext`：补齐 Chromium/docker CLI/Jij/vegalite/knowns 等被测服务依赖），两者通过 docker 网络 `calchas-net` 互通。同步到 A 的 `~/experiment/services/` 运行 | 运行数据 `data/`、密码 `.env`、构建缓存种子 `.uv-seed/`、包缓存 `cache/` | 是（`data/`、`.env`、`.uv-seed/`、`cache/` 除外） |
 | `deploy/cells/` | 大规模批量检测的 docker-compose 单元（gateway+oob+runner）、镜像构建与批次装配脚本 | 镜像包 `*.tar.gz`、真实批次清单、运行结果、运行台账 | 是（产物除外，见 `deploy/cells/.gitignore`） |
 | `deploy/infra/oob/` | OOB 带外回连采集器 | — | 是 |
 | `deploy/batches/` | 已冻结批次的记录，一批一个子目录，冻结后只读 | 进行中的批次 | 是 |
-| `dataset/` | CVE/GHSA/OSV 漏洞数据集流水线：`download.py`→`collect.py`→`classify.py`→`analyze.py`，产物写到 `data/` | 数据本身 | 是（`llm_config.py` 含 key，除外） |
+| `dataset/` | CVE/GHSA/OSV 漏洞数据集流水线：`download.py`→`collect.py`→`classify.py`→`analyze.py`，产物写到 `data/`；另有 `keyword_lexicon.py`：从 CVE 全量按 CWE 归纳四类参数名词表（排除评测集与 MCP 相关 CVE，合并 Gf-Patterns），输出到 `calchas/sink/keyword_lexicon.json` | 数据本身 | 是（`llm_config.py` 含 key，除外） |
 | `mcp-cve-dataset/` | 对外贡献的 MCP CVE 复现数据集。每个 CVE 一个自包含子目录 `<CVE或GHSA>__<后端key>/`：`Dockerfile`（通用：node+uv+git+supergateway，把 stdio 服务用 supergateway 包成 HTTP `/mcp`）+ `vulnerable/`（漏洞版 compose，必有）+ `patched/`（修复版 compose，有修复版才建）+ `poc.py`（连 MCP 端点触发漏洞，按漏洞类有不同载荷/判据）+ `verify.sh`（差分验证）+ `README.md` + `meta.json`；SSRF 类多一个 `_collector/`（内网金丝雀回连目标）。对外统一走 HTTP 端点（方案 A）。`_build/` 是生成器：`build_facts.py`（从 round2 总表+gt_backends+cve_reference join 出 `facts.json`）→ `generate.py`（模板批量生成所有条目），改模板后重跑即可全量再生。样本身份对齐 `data/groundtruth/round2/`，但本目录是可独立开源的干净产物，不依赖 round2 网关/OOB。已同步到服务器 B `/home/star/cuz/mcp-cve-dataset/` | 检测器源码、实验配置、针对个别服务的特判 | 是 |
 | `data/` | 数据集流水线产物（`raw/`、`candidates.*`、`labels*`、`analysis/`）、ground truth（`groundtruth/`：按轮次分 `round1_frozen/` 旧轮只读 + `round2/` 当前轮；样本定义只认 `round2/数据集总表.md`）、服务器归档（`server_archive/`：从检测服务器撤下的实验数据冷备，一台一次一个 tar.gz） | 代码 | 否 |
 | `docs/` | 中文设计文档（各模块设计、判定方法论、漏洞类型）、论文资料（框架、方法讨论、实验计划、引言草稿）、`参考论文/` PDF | 代码、数据 | 是（`参考论文/` 除外） |

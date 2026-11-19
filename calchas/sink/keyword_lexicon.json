@@ -1,0 +1,3157 @@
+{
+ "meta": {
+  "generated": "2026-11-18",
+  "generator": "dataset/keyword_lexicon.py",
+  "method": "CWE 归类 + 固定句式从 CVE 描述抽注入点名字 + 跨 CVE 频率筛选 + Gf-Patterns 原样合并",
+  "cvelist_sha256": "d1435aa96a97c6674e53aa6ab8a2ba0e2df52c42cc6697d222408ed979478509",
+  "min_cve": 2,
+  "core_cve": 4,
+  "gf": {
+   "repo": "1ndianl33t/Gf-Patterns",
+   "commit": "f686f06ae647726578920084c894100d702496cc"
+  },
+  "nltk_stopwords_english_sha256": "f6d005956f407dbc6ea32e5ff0c7e8e6f71488d3239b9023efdc7fc139d6375b",
+  "excluded": {
+   "code_eval_xss": 1447,
+   "mcp_related": 343,
+   "eval_set": 28
+  },
+  "eval_cves_excluded_list_size": 35
+ },
+ "classes": {
+  "external_program": {
+   "cwe": [
+    "CWE-78",
+    "CWE-88"
+   ],
+   "maps_to": [
+    "command_injection",
+    "argument_injection"
+   ],
+   "gf_file": "rce.json",
+   "cves": 4396,
+   "cves_with_name": 986,
+   "words": [
+    {
+     "word": "delimiters",
+     "cve_count": 47,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "request",
+     "cve_count": 26,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "enable",
+     "cve_count": 23,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "command",
+     "cve_count": 20,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "filename",
+     "cve_count": 17,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "host",
+     "cve_count": 15,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "ip",
+     "cve_count": 15,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "name",
+     "cve_count": 15,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "path",
+     "cve_count": 15,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "hostname",
+     "cve_count": 14,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "mac",
+     "cve_count": 13,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "file",
+     "cve_count": 12,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "unsanitized",
+     "cve_count": 11,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "configuration",
+     "cve_count": 10,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "query",
+     "cve_count": 10,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "url",
+     "cve_count": 10,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "value",
+     "cve_count": 10,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "ipaddr",
+     "cve_count": 8,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "user",
+     "cve_count": 8,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "username",
+     "cve_count": 8,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "date",
+     "cve_count": 7,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "cmd",
+     "cve_count": 6,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "key",
+     "cve_count": 6,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "mode",
+     "cve_count": 6,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "password",
+     "cve_count": 6,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "template",
+     "cve_count": 6,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "admpass",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "handling",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "id",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "line",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "service",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "values",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "data",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "destination",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "domain",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "handler",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "passed",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "sanitization",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "syscmd",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "adminid",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "args",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "base64url",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "deviceurl",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "enabled",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "keypasswd",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "like",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "merge",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "pin",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "properly",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "quoting",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "ssid",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "strings",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "system",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "targetapssid",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "type",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "usbname",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "wifioff",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "action",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "address",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "addrprefixlen",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "alias",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "atefunc",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "bash",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "branch",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "called",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "cgi",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "comment",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "destip",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "dir",
+     "cve_count": 2,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "escaping",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "firewalltype",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "fmgpon_loid",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "form",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "git",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "header",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "hname",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "host_time",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "input",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "interface",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "ipaddress",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "iw_serverip",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "json",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "lan_ip",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "lang",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "list",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "maxrtradvinterval",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "names",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "ntp",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "oldipmask",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "page",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "peernode",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "playlist",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "policy_name",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "policynames",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "pptppassthru",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "proto",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "provider",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "resetflags",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "rootapmac",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "sambaenabled",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "search",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "session",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "sessionpath",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "sql",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "staticroute_ip_setting",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "target_addr",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "telnet_enabled",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "text_ip_addr",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "time",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "timezone",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "tty_server",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "tz",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "uid",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "uploadedfile",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "wanidx",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "wans",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "webwlanidx",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "wizard",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "wlanif",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "wscdisabled",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "xajaxargs",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "cli",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "code",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "exec",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "feature",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "function",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "load",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "ping",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "req",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "arg",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "daemon",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "do",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "download",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "exe",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "execute",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "func",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "jump",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "log",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "module",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "option",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "payload",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "print",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "process",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "read",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "reg",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "run",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "step",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "upload",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    }
+   ]
+  },
+  "file_path": {
+   "cwe": [
+    "CWE-22",
+    "CWE-23",
+    "CWE-36",
+    "CWE-73",
+    "CWE-98"
+   ],
+   "maps_to": [
+    "path_traversal"
+   ],
+   "gf_file": "lfi.json",
+   "cves": 7901,
+   "cves_with_name": 1173,
+   "words": [
+    {
+     "word": "filename",
+     "cve_count": 113,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "path",
+     "cve_count": 81,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "file",
+     "cve_count": 69,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "name",
+     "cve_count": 42,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "page",
+     "cve_count": 33,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "url",
+     "cve_count": 32,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "filepath",
+     "cve_count": 28,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "query",
+     "cve_count": 20,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "template",
+     "cve_count": 18,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "id",
+     "cve_count": 12,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "request",
+     "cve_count": 11,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "file_name",
+     "cve_count": 9,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "file_path",
+     "cve_count": 9,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "folder",
+     "cve_count": 9,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "type",
+     "cve_count": 9,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "dir",
+     "cve_count": 6,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "route",
+     "cve_count": 6,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "action",
+     "cve_count": 5,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "configuration",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "files",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "src",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "tab",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "theme",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "allowing",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "handler",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "input",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "key",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "lang",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "language",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "passed",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "set",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "values",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "accepts",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "containing",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "controller",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "data",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "dest_folder_path",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "fileid",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "fileurl",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "fullpath",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "imgname",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "layout",
+     "cve_count": 3,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "oldfile",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "option",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "output_path",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "project_name",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "req",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "sessionid",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "shortcode",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "skin",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "source",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "style",
+     "cve_count": 3,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "subdir",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "username",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "value",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "verification",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "weight_map",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "wp_abspath",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "abspath",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "activepath",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "alongside",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "api",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "checksum",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "code",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "command",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "config",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "content-disposition",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "data_dir",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "delete",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "destination",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "dir_path",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "directory",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "dirname",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "discussion_db_name",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "doc",
+     "cve_count": 2,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "downloadfile",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "event_layout",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "exec-output",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "expression",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "feed",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "file_key",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "flag",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "getpage",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "granted",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "href",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "identifier",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "imageid",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "img",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "iplist",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "locale",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "location",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "model_path",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "open",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "outputfile",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "parent",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "plugin",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "prefixed",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "realname",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "received",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "sanitization",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "sanitize_path",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "script",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "select",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "service",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "settings",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "size",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "snapshot_path",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "submitted",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "svg",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "tag",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "task_id",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "tpl",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "user-supplied",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "validation",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "version",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "vulnerable",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "content",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "detail",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "document",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "download",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "include",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "board",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "cat",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "conf",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "date",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "inc",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "locate",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "mod",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "pdf",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "pg",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "php_path",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "prefix",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "root",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "show",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "site",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "view",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    }
+   ]
+  },
+  "network_address": {
+   "cwe": [
+    "CWE-918"
+   ],
+   "maps_to": [
+    "ssrf"
+   ],
+   "gf_file": "ssrf.json",
+   "cves": 3018,
+   "cves_with_name": 442,
+   "words": [
+    {
+     "word": "url",
+     "cve_count": 121,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "host",
+     "cve_count": 14,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "query",
+     "cve_count": 14,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "path",
+     "cve_count": 12,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "baseurl",
+     "cve_count": 7,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "source",
+     "cve_count": 6,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "handler",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "beta",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "content",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "fileurl",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "link",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "request_uri",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "api_base",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "apiurl",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "base_url",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "endpoint",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "image",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "imageurl",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "request",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "server",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "value",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "cjurl",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "configuration",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "data",
+     "cve_count": 2,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "file",
+     "cve_count": 2,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "filename",
+     "cve_count": 2,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "form",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "img",
+     "cve_count": 2,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "ip",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "like",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "one",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "pic",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "proxy",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "rooturl",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "rssurl",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "send",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "stable",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "targeturl",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "uri",
+     "cve_count": 2,
+     "sources": [
+      "cve_low",
+      "gf"
+     ]
+    },
+    {
+     "word": "webhook_url",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "html",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "window",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "access",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "adm",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "admin",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "alter",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "callback",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "cfg",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "clone",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "continue",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "create",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "dbg",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "debug",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "delete",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "dest",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "dir",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "disable",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "doc",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "document",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "domain",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "edit",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "enable",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "exec",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "execute",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "feed",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "folder",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "grant",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "load",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "make",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "modify",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "navigation",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "next",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "open",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "out",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "page",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "pg",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "php_path",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "port",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "redirect",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "reference",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "rename",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "reset",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "return",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "root",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "shell",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "show",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "site",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "style",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "test",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "to",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "toggle",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "val",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "validate",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "view",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    }
+   ]
+  },
+  "code_eval": {
+   "cwe": [
+    "CWE-94",
+    "CWE-95",
+    "CWE-917",
+    "CWE-1336"
+   ],
+   "maps_to": [
+    "code_injection"
+   ],
+   "gf_file": "ssti.json",
+   "cves": 2745,
+   "cves_with_name": 344,
+   "words": [
+    {
+     "word": "query",
+     "cve_count": 11,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "content",
+     "cve_count": 10,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "url",
+     "cve_count": 8,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "type",
+     "cve_count": 6,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "code",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "name",
+     "cve_count": 5,
+     "sources": [
+      "cve_core",
+      "gf"
+     ]
+    },
+    {
+     "word": "path",
+     "cve_count": 5,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "brokerconfig",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "imgsz",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "names",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "nodes_exclude",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "request",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "values",
+     "cve_count": 4,
+     "sources": [
+      "cve_core"
+     ]
+    },
+    {
+     "word": "action",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "config",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "configuration",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "data",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "default",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "module",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "passed",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "target",
+     "cve_count": 3,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "agents_file",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "aid",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "args",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "array",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "body",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "column",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "containing",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "criteria",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "db_name",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "exec",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "expression",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "file",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "filename",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "function",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "functionname",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "header",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "input",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "locale",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "main",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "plugin",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "question",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "redirecturlparameter",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "run_tool",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "script",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "setting",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "slot",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "text",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "trust_remote_code",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "user",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "value",
+     "cve_count": 2,
+     "sources": [
+      "cve_low"
+     ]
+    },
+    {
+     "word": "redirect",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "template",
+     "cve_count": 1,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "activity",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "id",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "preview",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    },
+    {
+     "word": "view",
+     "cve_count": 0,
+     "sources": [
+      "gf"
+     ]
+    }
+   ]
+  }
+ }
+}
